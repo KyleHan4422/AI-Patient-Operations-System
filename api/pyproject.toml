@@ -12,8 +12,14 @@ dependencies = [
     "pydantic>=2.9",
     "pydantic-settings>=2.6",
     # Postgres driver. psycopg3 (not asyncpg) because LangGraph's
-    # AsyncPostgresSaver is built on psycopg3 -- one driver, one pool.
-    "psycopg[binary,pool]>=3.2",
+    # AsyncPostgresSaver is built on psycopg3 -- one driver for the ORM, the
+    # migrations and (from Phase 2) the checkpointer. Not one pool: the
+    # checkpointer requires autocommit connections, so it gets its own.
+    "psycopg[binary]>=3.2",
+    # ORM + migrations. SQLAlchemy drives psycopg3 in both modes: async for
+    # the app, sync for Alembic -- same URL, same driver.
+    "sqlalchemy[asyncio]>=2.0.36",
+    "alembic>=1.14",
     # Redis: coordination layer (holds, breaker, idempotency) + ARQ backend
     "redis>=5.2",
     "arq>=0.26",
@@ -27,6 +33,8 @@ dev = [
     "pytest-asyncio>=0.24",
     "httpx>=0.27",
     "ruff>=0.8",
+    # Property-based tests for the slot computation
+    "hypothesis>=6.120",
 ]
 
 # ---------------------------------------------------------------------------
@@ -46,6 +54,9 @@ packages = ["src/patient_ops"]
 testpaths = ["tests"]
 asyncio_mode = "auto"
 addopts = "-q"
+markers = [
+    "db: needs a running Postgres (make up). Deselect with -m 'not db'.",
+]
 
 [tool.ruff]
 line-length = 100
@@ -53,3 +64,8 @@ target-version = "py312"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "ASYNC"]
+
+[tool.ruff.lint.isort]
+# api/alembic/ (the migrations directory) would otherwise make ruff file the
+# alembic library under first-party imports.
+known-third-party = ["alembic"]

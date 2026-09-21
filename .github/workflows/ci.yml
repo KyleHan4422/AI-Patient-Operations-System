@@ -12,6 +12,31 @@ jobs:
       run:
         working-directory: api
 
+    # A real Postgres, because the guarantees under test -- the no_overlap
+    # EXCLUDE constraint, the UNIQUE idempotency key -- exist only in Postgres.
+    # Same image and host port as docker-compose.yml. Redis is still not
+    # needed: its failures are injected, not produced.
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: patient_ops
+          POSTGRES_PASSWORD: patient_ops
+          POSTGRES_DB: patient_ops
+        ports:
+          - "5433:5432"
+        options: >-
+          --health-cmd "pg_isready -U patient_ops -d patient_ops"
+          --health-interval 3s
+          --health-timeout 3s
+          --health-retries 20
+
+    env:
+      DATABASE_URL: postgresql://patient_ops:patient_ops@localhost:5433/patient_ops
+      # Property tests replay the same examples on every run, so a red build
+      # is reproducible locally with HYPOTHESIS_PROFILE=ci.
+      HYPOTHESIS_PROFILE: ci
+
     steps:
       - uses: actions/checkout@v4
 
@@ -23,7 +48,7 @@ jobs:
         run: uv sync --extra dev
 
       - name: Lint
-        run: uv run ruff check src tests scripts
+        run: uv run ruff check src tests scripts alembic
 
       # The project's central claim -- agents reason, they never write -- is
       # enforced here rather than promised in the README. Run before the test
@@ -31,7 +56,18 @@ jobs:
       - name: Architectural invariant (agents/ is read-only)
         run: uv run python scripts/check_invariants.py --verbose
 
-      # No services needed: dependency failures are injected at the probe seam,
+      - name: Migrate
+        run: uv run alembic upgrade head
+
+      # Structural drift only (tables, columns, indexes, FKs, UNIQUE). Alembic
+      # does not compare CHECK or EXCLUDE constraints; the test suite does
+      # (test_migrations.py compares them via Postgres, test_constraints.py
+      # checks they actually reject bad rows).
+      - name: Models match migrations
+        run: uv run alembic check
+
+      # The suite builds its own throwaway patient_ops_test database from the
+      # migrations. Dependency *outages* are still injected at the probe seam,
       # not produced by stopping containers.
       - name: Test
         run: uv run pytest

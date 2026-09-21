@@ -13,6 +13,15 @@ This script turns that claim into a check that fails the build, rather than a
 promise in a README. It is deliberately written before the code it guards:
 a rule added after the first violation is a rule nobody will enforce.
 
+Two rules, because a write can hide in two ways:
+
+  IMPORTS   agents/ may not import the modules that can write -- the database
+            layer, the calendar adapters, Redis, the job queue. Agents reach
+            data only through the read-only tools in tools/. This is the
+            structural rule: it does not need to know any method names.
+  PATTERNS  write-shaped calls and raw SQL (below), as a second net for
+            anything the import rule cannot see.
+
 Precision matters more than coverage here. A noisy check gets commented out, so
 patterns are matched against code with comments and string literals stripped,
 and `# noqa: invariant -- <reason>` documents a reviewed exception.
@@ -24,6 +33,7 @@ Exit:   0 = clean, 1 = violations found
 from __future__ import annotations
 
 import argparse
+import ast
 import io
 import re
 import sys
@@ -32,9 +42,26 @@ from dataclasses import dataclass
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-GUARDED_DIR = REPO_ROOT / "api" / "src" / "patient_ops" / "agents"
+SRC_ROOT = REPO_ROOT / "api" / "src"
+GUARDED_DIR = SRC_ROOT / "patient_ops" / "agents"
 
 ALLOW_MARKER = "noqa: invariant"
+
+# Modules agents/ must not import -- each one can change state. A module and
+# everything beneath it: "patient_ops.db" also covers "patient_ops.db.repo".
+# Grows with the project: Phase 6 adds patient_ops.tools.booking, Phase 10
+# adds patient_ops.tools.escalation.
+DENIED_IMPORTS: tuple[str, ...] = (
+    "patient_ops.db",
+    "patient_ops.adapters",
+    "patient_ops.redis_layer",
+    "patient_ops.jobs",
+    "sqlalchemy",
+    "psycopg",
+    "psycopg_pool",
+    "redis",
+    "arq",
+)
 
 # Two pattern groups, because the two kinds of write hide in different places.
 #
@@ -54,6 +81,7 @@ CODE_PATTERNS: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"\b(book_appointment|place_holds?|release_holds)\s*\("), "booking write"),
     (re.compile(r"\bescalate_to_human\s*\("), "escalation write -- agents emit Handoff instead"),
     (re.compile(r"\.\s*(post|put|patch|delete)\s*\("), "outbound mutating HTTP call"),
+    (re.compile(r"\b(import_module|__import__)\s*\("), "dynamic import -- defeats the import rule"),
 ]
 
 SQL_PATTERNS: list[tuple[re.Pattern[str], str]] = [
@@ -65,7 +93,6 @@ SQL_PATTERNS: list[tuple[re.Pattern[str], str]] = [
 ]
 
 
-
 @dataclass(frozen=True)
 class Violation:
     path: Path
@@ -74,8 +101,79 @@ class Violation:
     source: str
 
     def render(self) -> str:
-        rel = self.path.relative_to(REPO_ROOT)
+        rel = self.path.relative_to(REPO_ROOT) if self.path.is_relative_to(REPO_ROOT) else self.path
         return f"  {rel}:{self.line_no}\n      {self.rule}: {self.source.strip()}"
+
+
+def package_of(path: Path) -> str:
+    """Dotted package a source file belongs to, e.g. patient_ops.agents."""
+    return ".".join(path.relative_to(SRC_ROOT).parent.parts)
+
+
+def _imported_modules(node: ast.Import | ast.ImportFrom, package: str) -> list[str]:
+    """Every module an import statement can bind, with relative imports resolved.
+
+    `from patient_ops import db` binds the module patient_ops.db, so each
+    imported name is also checked as a submodule.
+    """
+    if isinstance(node, ast.Import):
+        return [alias.name for alias in node.names]
+    base = node.module or ""
+    if node.level:  # relative: one leading dot = this package, two = its parent, ...
+        parts = package.split(".")
+        anchor = ".".join(parts[: len(parts) - node.level + 1])
+        base = f"{anchor}.{base}" if base else anchor
+    return [base, *(f"{base}.{alias.name}" for alias in node.names)]
+
+
+def _denied_prefix(module: str) -> str | None:
+    return next((d for d in DENIED_IMPORTS if module == d or module.startswith(d + ".")), None)
+
+
+def _dotted_name(node: ast.Attribute) -> str | None:
+    """`patient_ops.db.repo.find` -> "patient_ops.db.repo.find"; None if not a plain chain."""
+    parts: list[str] = []
+    current: ast.expr = node
+    while isinstance(current, ast.Attribute):
+        parts.append(current.attr)
+        current = current.value
+    if not isinstance(current, ast.Name):
+        return None
+    return ".".join([current.id, *reversed(parts)])
+
+
+def scan_imports(path: Path, package: str) -> list[Violation]:
+    """Imports of write-capable modules, and references that reach them anyway.
+
+    The second case closes a bypass: `import patient_ops` imports nothing
+    denied, yet `patient_ops.db.repo...` then walks straight into the database
+    layer. Only our own package is checked this way -- a third-party module
+    cannot be reached without importing it, which the first case catches.
+    """
+    source = path.read_text(encoding="utf-8")
+    raw_lines = source.splitlines()
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return []  # the pattern scan still covers the raw text
+
+    found: dict[int, str] = {}  # line -> rule; one report per line
+    # walk, not body: TYPE_CHECKING blocks and function-local imports count too
+    for node in ast.walk(tree):
+        rule = None
+        if isinstance(node, ast.Import | ast.ImportFrom):
+            denied = next(filter(None, map(_denied_prefix, _imported_modules(node, package))), None)
+            rule = f"import of write-capable {denied}" if denied else None
+        elif isinstance(node, ast.Attribute):
+            dotted = _dotted_name(node)
+            denied = (
+                _denied_prefix(dotted) if dotted and dotted.startswith("patient_ops.") else None
+            )
+            rule = f"reference to write-capable {denied}" if denied else None
+        if rule and node.lineno not in found and ALLOW_MARKER not in raw_lines[node.lineno - 1]:
+            found[node.lineno] = rule
+
+    return [Violation(path, n, rule, raw_lines[n - 1]) for n, rule in sorted(found.items())]
 
 
 def tokenize_source(source: str) -> tuple[dict[int, str], dict[int, str]]:
@@ -145,7 +243,7 @@ def main() -> int:
         return 1
 
     files = sorted(p for p in GUARDED_DIR.rglob("*.py") if "__pycache__" not in p.parts)
-    violations = [v for f in files for v in scan_file(f)]
+    violations = [v for f in files for v in (*scan_imports(f, package_of(f)), *scan_file(f))]
 
     rel = GUARDED_DIR.relative_to(REPO_ROOT)
     if args.verbose:
@@ -157,9 +255,10 @@ def main() -> int:
         for v in violations:
             print(v.render(), file=sys.stderr)
         print(
-            "\n  Agents are read-only by design. Move this behind the "
-            "deterministic\n  validate -> execute -> verify path in graph/nodes/, or annotate the\n"
-            f"  line with `# {ALLOW_MARKER} -- <reason>` if it is genuinely read-only.",
+            "\n  Agents are read-only by design. Reach data through the read-only tools in\n"
+            "  tools/, move writes behind the deterministic validate -> execute -> verify\n"
+            "  path in graph/nodes/, or mark a reviewed exception with\n"
+            f"  `# {ALLOW_MARKER} -- <reason>`.",
             file=sys.stderr,
         )
         return 1

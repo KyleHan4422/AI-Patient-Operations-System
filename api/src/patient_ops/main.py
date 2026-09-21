@@ -14,10 +14,12 @@ import redis.asyncio as aioredis
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from psycopg_pool import AsyncConnectionPool
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncEngine
 
 from patient_ops import __version__
 from patient_ops.config import Settings, get_settings
+from patient_ops.db.session import build_engine, build_session_factory
 from patient_ops.health import HealthReport, Probe, check_health
 from patient_ops.obs.logging import RequestIdMiddleware, configure_logging, get_logger
 
@@ -30,18 +32,6 @@ log = get_logger(__name__)
 # ---------------------------------------------------------------------------
 # Dependency clients
 # ---------------------------------------------------------------------------
-def build_pg_pool(settings: Settings) -> AsyncConnectionPool:
-    return AsyncConnectionPool(
-        conninfo=settings.database_url,
-        min_size=settings.db_pool_min_size,
-        max_size=settings.db_pool_max_size,
-        timeout=settings.db_connect_timeout_s,
-        # Do not connect in the constructor: opening is an awaitable step we
-        # want to control, and we must not block import.
-        open=False,
-    )
-
-
 def build_redis(settings: Settings) -> aioredis.Redis:
     return aioredis.from_url(
         settings.redis_url,
@@ -54,10 +44,12 @@ def build_redis(settings: Settings) -> aioredis.Redis:
 # ---------------------------------------------------------------------------
 # Probes -- one per dependency, raising on failure.
 # ---------------------------------------------------------------------------
-def make_postgres_probe(pool: AsyncConnectionPool) -> Probe:
+def make_postgres_probe(engine: AsyncEngine) -> Probe:
+    # Probe through the same pool that serves real traffic. A separate probe
+    # connection can be green while the application pool is exhausted.
     async def probe() -> None:
-        async with pool.connection() as conn:
-            await conn.execute("SELECT 1")
+        async with engine.connect() as conn:
+            await conn.execute(text("SELECT 1"))
 
     return probe
 
@@ -77,18 +69,17 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings: Settings = app.state.settings
     configure_logging(settings)
 
-    pool = build_pg_pool(settings)
+    # Neither client connects here. Boot must succeed even when a dependency
+    # is down, so that /health can report the truth: a process that crashes
+    # on boot reports nothing at all.
+    engine = build_engine(settings)
     redis_client = build_redis(settings)
 
-    # wait=False: boot must succeed even when a dependency is down, so that
-    # /health can report the truth. A process that crashes on boot reports
-    # nothing at all.
-    await pool.open(wait=False)
-
-    app.state.pg_pool = pool
+    app.state.engine = engine
+    app.state.session_factory = build_session_factory(engine)
     app.state.redis = redis_client
     app.state.probes = {
-        "postgres": make_postgres_probe(pool),
+        "postgres": make_postgres_probe(engine),
         "redis": make_redis_probe(redis_client),
     }
 
@@ -96,7 +87,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     try:
         yield
     finally:
-        await pool.close()
+        await engine.dispose()
         await redis_client.aclose()
         log.info("shutdown_complete")
 

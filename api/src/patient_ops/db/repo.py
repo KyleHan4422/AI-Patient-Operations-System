@@ -1,0 +1,148 @@
+"""Read-only queries over the system of record.
+
+Every function here reads; none writes. Phase 1 has exactly two write paths --
+FakeCalendar.book() and scripts/seed.py -- and neither lives in this module.
+Reads and writes are separated at the module level so that the architectural
+check can reason about imports rather than about method names.
+
+Rows that feed pure domain logic are returned as domain objects
+(ScheduleWindow, Interval), so domain/ never sees the ORM.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Collection
+from datetime import date, datetime
+
+from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from patient_ops.db.models import (
+    Appointment,
+    ClinicClosure,
+    InsurancePlan,
+    Patient,
+    Procedure,
+    Provider,
+    ProviderSchedule,
+)
+from patient_ops.domain.availability import Interval, ScheduleWindow
+from patient_ops.domain.phone import normalize_phone
+
+
+def _normalize_name(name: str) -> str:
+    return " ".join(name.split()).lower()
+
+
+# ---------------------------------------------------------------------------
+# Reference data
+# ---------------------------------------------------------------------------
+async def get_procedure(session: AsyncSession, code: str) -> Procedure | None:
+    return await session.get(Procedure, code)
+
+
+async def list_procedures(session: AsyncSession) -> list[Procedure]:
+    return list((await session.scalars(select(Procedure).order_by(Procedure.code))).all())
+
+
+async def find_insurance_plan(session: AsyncSession, plan_name: str) -> InsurancePlan | None:
+    """Look up a plan by exact name, ignoring case and spacing.
+
+    Returns None when the plan is not on file. That is a different answer from
+    a row with accepted=False: "we don't know" versus "we don't take it". The
+    agent tool built on this in Phase 4 must say "unknown", never "no".
+    Deliberately not fuzzy -- see InsurancePlan.
+    """
+    stmt = select(InsurancePlan).where(
+        func.lower(InsurancePlan.plan_name) == _normalize_name(plan_name)
+    )
+    return await session.scalar(stmt)
+
+
+# ---------------------------------------------------------------------------
+# Patients
+# ---------------------------------------------------------------------------
+async def find_patients(
+    session: AsyncSession,
+    *,
+    phone: str | None = None,
+    name: str | None = None,
+    dob: date | None = None,
+) -> list[Patient]:
+    """Patients matching every criterion given.
+
+    Zero, one or several. Several is not an error: it is the signal to ask a
+    follow-up question ("what's your date of birth?"). An unparseable phone
+    number raises ValueError, so the caller can ask for it again.
+    """
+    if phone is None and name is None and dob is None:
+        raise ValueError("find_patients needs at least one criterion")
+    stmt = select(Patient)
+    if phone is not None:
+        stmt = stmt.where(Patient.phone == normalize_phone(phone))
+    if name is not None:
+        stmt = stmt.where(func.lower(Patient.full_name) == _normalize_name(name))
+    if dob is not None:
+        stmt = stmt.where(Patient.dob == dob)
+    return list((await session.scalars(stmt.order_by(Patient.id))).all())
+
+
+# ---------------------------------------------------------------------------
+# Scheduling inputs -- returned as domain objects
+# ---------------------------------------------------------------------------
+async def get_provider(session: AsyncSession, provider_id: int) -> Provider | None:
+    return await session.get(Provider, provider_id)
+
+
+async def providers_for_specialty(session: AsyncSession, specialty: str) -> list[Provider]:
+    stmt = select(Provider).where(Provider.specialty == specialty).order_by(Provider.id)
+    return list((await session.scalars(stmt)).all())
+
+
+async def schedules_for(
+    session: AsyncSession, provider_ids: Collection[int]
+) -> list[ScheduleWindow]:
+    stmt = select(ProviderSchedule).where(ProviderSchedule.provider_id.in_(provider_ids))
+    return [
+        ScheduleWindow(r.provider_id, r.weekday, r.start_time, r.end_time)
+        for r in (await session.scalars(stmt)).all()
+    ]
+
+
+async def closures_between(session: AsyncSession, first: date, last: date) -> set[date]:
+    stmt = select(ClinicClosure.closed_on).where(ClinicClosure.closed_on.between(first, last))
+    return set((await session.scalars(stmt)).all())
+
+
+async def booked_intervals(
+    session: AsyncSession, provider_ids: Collection[int], start: datetime, end: datetime
+) -> list[tuple[int, Interval]]:
+    """Live bookings of these providers that overlap [start, end).
+
+    Written with the same `provider_id =` / `tstzrange &&` shape as the
+    no_overlap constraint, so the GiST index behind that constraint serves this
+    query too.
+    """
+    period = func.tstzrange(Appointment.start_at, Appointment.end_at)
+    stmt = select(Appointment.provider_id, Appointment.start_at, Appointment.end_at).where(
+        Appointment.status == "booked",
+        Appointment.provider_id.in_(provider_ids),
+        period.op("&&")(func.tstzrange(start, end)),
+    )
+    return [(pid, Interval(s, e)) for pid, s, e in (await session.execute(stmt)).all()]
+
+
+# ---------------------------------------------------------------------------
+# Appointments
+# ---------------------------------------------------------------------------
+async def get_appointment(
+    session: AsyncSession, *, appointment_id: int | None = None, idempotency_key: str | None = None
+) -> Appointment | None:
+    """The verification read: look a booking up by id or by the key it was written with."""
+    if (appointment_id is None) == (idempotency_key is None):
+        raise ValueError("pass exactly one of appointment_id or idempotency_key")
+    if appointment_id is not None:
+        return await session.get(Appointment, appointment_id)
+    return await session.scalar(
+        select(Appointment).where(Appointment.idempotency_key == idempotency_key)
+    )

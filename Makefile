@@ -17,7 +17,8 @@ API_URL  := http://localhost:$(API_PORT)
 .DEFAULT_GOAL := help
 
 .PHONY: help env install up down restart logs ps wait nuke \
-        dev worker web health test lint fmt check-invariants check
+        migrate migration db-check db-reset seed slots psql \
+        dev worker web health test test-unit lint fmt check-invariants check
 
 ## ---------------------------------------------------------------------------
 ## Setup
@@ -67,6 +68,34 @@ nuke: ## Destroy containers AND the Postgres volume (re-runs db/init scripts)
 	@echo "volume removed -- db/init/*.sql will re-run on the next 'make up'"
 
 ## ---------------------------------------------------------------------------
+## Database: schema, demo data, inspection
+## ---------------------------------------------------------------------------
+migrate: ## Apply every migration (alembic upgrade head)
+	$(UV) alembic upgrade head
+
+migration: ## Draft a migration from model changes: make migration m="add notifications"
+	@test -n "$(m)" || (echo 'usage: make migration m="describe the change"'; exit 1)
+	$(UV) alembic revision --autogenerate -m "$(m)"
+
+db-check: ## Fail if the ORM models and the migrations disagree
+	$(UV) alembic check
+
+db-reset: ## Rebuild the schema from zero and reseed (DESTROYS dev data)
+	$(UV) alembic downgrade base
+	$(UV) alembic upgrade head
+	@$(MAKE) --no-print-directory seed
+
+seed: ## Upsert the demo clinic (safe to re-run)
+	$(UV) python scripts/seed.py
+
+slots: ## Show bookable slots: make slots p=CROWN [days=7] [from=2026-11-23]
+	$(UV) python scripts/show_slots.py $(or $(p),CLEANING) --days $(or $(days),7) \
+	  $(if $(from),--from $(from))
+
+psql: ## Open psql inside the Postgres container
+	docker exec -it patient-ops-postgres sh -c 'psql -U "$$POSTGRES_USER" -d "$$POSTGRES_DB"'
+
+## ---------------------------------------------------------------------------
 ## Processes (run each in its own terminal)
 ## ---------------------------------------------------------------------------
 dev: ## Run the FastAPI app with hot reload
@@ -86,18 +115,21 @@ health: ## Print /health with its HTTP status code
 	@code=$$(curl -s -o /tmp/patient-ops-health.json -w '%{http_code}' $(API_URL)/health) \
 	  && echo "HTTP $$code" && cat /tmp/patient-ops-health.json | $(API)/.venv/bin/python -m json.tool
 
-test: ## Run the Python test suite
+test: ## Run the whole Python test suite (needs `make up`)
 	$(UV) pytest
 
+test-unit: ## Run only the tests that need no database (works with containers stopped)
+	$(UV) pytest -m "not db"
+
 lint: ## Lint Python and TypeScript
-	$(UV) ruff check src tests scripts
+	$(UV) ruff check src tests scripts alembic
 	cd $(WEB) && npx tsc --noEmit
 
 fmt: ## Auto-format and auto-fix Python
-	$(UV) ruff check --fix src tests scripts
-	$(UV) ruff format src tests scripts
+	$(UV) ruff check --fix src tests scripts alembic
+	$(UV) ruff format src tests scripts alembic
 
 check-invariants: ## Assert agents/ contains no write operations
 	$(UV) python scripts/check_invariants.py
 
-check: lint check-invariants test ## Everything CI runs
+check: lint check-invariants db-check test ## Everything CI runs

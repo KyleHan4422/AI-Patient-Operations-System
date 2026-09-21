@@ -10,9 +10,12 @@ from __future__ import annotations
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+from patient_ops.faults import FaultSpec, parse_fault_specs
 
 # The single .env lives at the repository root, shared by the app, the ARQ
 # worker and docker compose. Anchor to it absolutely: a relative ".env" would
@@ -52,6 +55,18 @@ class Settings(BaseSettings):
     # than one that fails: probes pile up behind it.
     health_probe_timeout_s: float = Field(default=1.0, gt=0, le=10)
 
+    # --- Scheduling policy ---------------------------------------------------
+    # Per-clinic rules, so configuration rather than code: a second clinic is
+    # a different .env, not a code change.
+    clinic_timezone: str = "America/New_York"
+    slot_step_min: int = Field(default=30, gt=0, le=240)
+    booking_min_lead_min: int = Field(default=120, ge=0)
+    booking_max_horizon_days: int = Field(default=180, gt=0)
+
+    # --- Fault injection: dev and test only -----------------------------------
+    # e.g. "book_appointment:timeout@1". Parsed at boot; refused in prod.
+    fault_inject: str = ""
+
     # --- LLM: unused until Phase 2 ----------------------------------------
     openai_api_key: str = ""
 
@@ -59,6 +74,57 @@ class Settings(BaseSettings):
     @classmethod
     def _upper(cls, v: str) -> str:
         return v.upper()
+
+    @field_validator("clinic_timezone")
+    @classmethod
+    def _known_timezone(cls, v: str) -> str:
+        try:
+            ZoneInfo(v)
+        except (ZoneInfoNotFoundError, ValueError):
+            raise ValueError(f"unknown IANA timezone {v!r}") from None
+        return v
+
+    @field_validator("fault_inject")
+    @classmethod
+    def _parseable_faults(cls, v: str) -> str:
+        parse_fault_specs(v)  # raises on a typo -- at boot, not mid-test
+        return v.strip()
+
+    @model_validator(mode="after")
+    def _pool_bounds(self) -> Settings:
+        if not 1 <= self.db_pool_min_size <= self.db_pool_max_size:
+            raise ValueError("need 1 <= DB_POOL_MIN_SIZE <= DB_POOL_MAX_SIZE")
+        return self
+
+    @model_validator(mode="after")
+    def _no_fault_injection_in_prod(self) -> Settings:
+        # A startup error, not a line in a runbook: a production process that
+        # deliberately fails bookings must be impossible to start.
+        if self.app_env == "prod" and self.fault_inject:
+            raise ValueError("FAULT_INJECT is refused when APP_ENV=prod")
+        return self
+
+    @property
+    def clinic_tz(self) -> ZoneInfo:
+        return ZoneInfo(self.clinic_timezone)
+
+    @property
+    def fault_specs(self) -> tuple[FaultSpec, ...]:
+        return parse_fault_specs(self.fault_inject)
+
+    @property
+    def sqlalchemy_url(self) -> str:
+        """DATABASE_URL with the psycopg3 driver named for SQLAlchemy.
+
+        .env keeps the plain libpq form (postgresql://...) that psql, psycopg
+        and LangGraph all accept as-is; only SQLAlchemy needs the driver
+        spelled out. create_async_engine picks psycopg's async mode from this
+        same URL, and Alembic uses it synchronously.
+        """
+        scheme, sep, rest = self.database_url.partition("://")
+        if sep and scheme in ("postgresql", "postgres"):
+            return f"postgresql+psycopg://{rest}"
+        return self.database_url
 
     @property
     def cors_origin_list(self) -> list[str]:

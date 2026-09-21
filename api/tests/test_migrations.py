@@ -1,0 +1,120 @@
+"""The migrations themselves, tested like code.
+
+A downgrade that has never run is a downgrade that does not work -- you find
+out during an incident. And models that drift from migrations mean the tests
+exercise one schema while production runs another.
+"""
+
+from __future__ import annotations
+
+import pytest
+from alembic import command
+from sqlalchemy import create_engine, inspect, text
+from sqlalchemy.pool import NullPool
+
+from patient_ops.config import Settings
+from patient_ops.db.models import Base
+from patient_ops.db.session import build_engine
+from tests.conftest import alembic_config, truncate_all
+
+DOMAIN_TABLES = {
+    "patients",
+    "providers",
+    "provider_schedules",
+    "clinic_closures",
+    "procedures",
+    "insurance_plans",
+    "appointments",
+}
+
+
+def _schema_facts(url: str) -> tuple[set[str], bool, str | None]:
+    engine = create_engine(url, poolclass=NullPool)
+    try:
+        with engine.connect() as conn:
+            tables = set(inspect(conn).get_table_names())
+            has_btree_gist = bool(
+                conn.scalar(text("SELECT count(*) FROM pg_extension WHERE extname = 'btree_gist'"))
+            )
+            no_overlap_type = conn.scalar(
+                text("SELECT contype::text FROM pg_constraint WHERE conname = 'no_overlap'")
+            )
+    finally:
+        engine.dispose()
+    return tables, has_btree_gist, no_overlap_type
+
+
+def test_migrations_round_trip(test_database_url: str):
+    cfg = alembic_config(test_database_url)
+
+    command.downgrade(cfg, "base")
+    tables, has_btree_gist, no_overlap = _schema_facts(test_database_url)
+    assert not (tables & DOMAIN_TABLES), "downgrade must remove every domain table"
+    assert not has_btree_gist
+    assert no_overlap is None
+
+    command.upgrade(cfg, "head")
+    tables, has_btree_gist, no_overlap = _schema_facts(test_database_url)
+    assert DOMAIN_TABLES <= tables
+    assert has_btree_gist, "the no_overlap constraint cannot exist without btree_gist"
+    assert no_overlap == "x", "no_overlap must be an EXCLUDE constraint"
+
+
+def test_models_and_migrations_agree(test_database_url: str):
+    """`alembic check`: fails if the models describe a schema the migrations don't build.
+
+    Covers tables, columns, types, indexes, foreign keys and UNIQUE. It does
+    NOT compare CHECK or EXCLUDE constraints -- it stays silent even if
+    no_overlap is deleted from the models. The next test covers that gap.
+    """
+    command.check(alembic_config(test_database_url))
+
+
+MIRROR = "models_mirror"
+RULES_SQL = text(
+    """
+    SELECT cl.relname, c.conname, pg_get_constraintdef(c.oid)
+    FROM pg_constraint c
+    JOIN pg_class cl ON cl.oid = c.conrelid
+    JOIN pg_namespace n ON n.oid = c.connamespace
+    WHERE n.nspname = :schema AND c.contype IN ('c', 'x')  -- CHECK, EXCLUDE
+    """
+)
+
+
+def test_check_and_exclude_rules_match_the_models(test_database_url: str):
+    """The rules alembic check cannot see, compared by Postgres itself.
+
+    Build a second copy of the schema straight from the models (in a scratch
+    schema), then ask Postgres to print every CHECK and EXCLUDE constraint of
+    both copies. Postgres normalises both the same way, so spelling
+    differences between the model and the migration do not matter -- only
+    meaning does.
+    """
+    engine = create_engine(test_database_url, poolclass=NullPool)
+    try:
+        with engine.begin() as conn:
+            conn.execute(text(f"DROP SCHEMA IF EXISTS {MIRROR} CASCADE"))
+            conn.execute(text(f"CREATE SCHEMA {MIRROR}"))
+            Base.metadata.create_all(conn.execution_options(schema_translate_map={None: MIRROR}))
+            from_migrations = set(conn.execute(RULES_SQL, {"schema": "public"}).all())
+            from_models = set(conn.execute(RULES_SQL, {"schema": MIRROR}).all())
+            conn.execute(text(f"DROP SCHEMA {MIRROR} CASCADE"))
+    finally:
+        engine.dispose()
+
+    assert from_migrations, "expected CHECK and EXCLUDE constraints in the migrated schema"
+    assert from_models == from_migrations, (
+        f"only in models: {sorted(from_models - from_migrations)}\n"
+        f"only in migrations: {sorted(from_migrations - from_models)}"
+    )
+
+
+async def test_truncate_refuses_a_non_test_database():
+    """The table-emptying fixture must be unable to touch a development database."""
+    engine = build_engine(
+        Settings(database_url="postgresql://patient_ops:patient_ops@localhost:5433/patient_ops")
+    )
+    with pytest.raises(RuntimeError, match="not a \\*_test database"):
+        await truncate_all(engine)  # raises before opening any connection
+    await engine.dispose()
