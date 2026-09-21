@@ -1,0 +1,46 @@
+# Infrastructure only. The FastAPI app and the ARQ worker run on the host
+# during development (hot reload + attachable debugger); only the stateful
+# services are containerised.
+name: patient-ops
+
+services:
+  postgres:
+    # pgvector image = Postgres 16 with the `vector` extension preinstalled.
+    # We need it from Phase 3 onward for embedding similarity search.
+    image: pgvector/pgvector:pg16
+    container_name: patient-ops-postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-patient_ops}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-patient_ops}
+      POSTGRES_DB: ${POSTGRES_DB:-patient_ops}
+    ports:
+      # Host port is configurable: :5432 is often already taken by a local
+      # Postgres install. Hard-coding host ports breaks on other machines.
+      - "${POSTGRES_HOST_PORT:-5433}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      # Scripts here run ONCE, when the volume is first initialised.
+      - ./db/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-patient_ops} -d ${POSTGRES_DB:-patient_ops}"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    container_name: patient-ops-redis
+    ports:
+      - "${REDIS_HOST_PORT:-6379}:6379"
+    # No volume on purpose: Redis holds coordination state, never correctness
+    # state. Losing it on restart must be survivable by design.
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+volumes:
+  pgdata:

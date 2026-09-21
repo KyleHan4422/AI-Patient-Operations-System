@@ -1,0 +1,55 @@
+[project]
+name = "patient-ops"
+version = "0.1.0"
+description = "AI front-desk / patient operations system for a dental clinic"
+requires-python = ">=3.12,<3.13"
+
+dependencies = [
+    # HTTP boundary
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    # Typed configuration loaded from the environment
+    "pydantic>=2.9",
+    "pydantic-settings>=2.6",
+    # Postgres driver. psycopg3 (not asyncpg) because LangGraph's
+    # AsyncPostgresSaver is built on psycopg3 -- one driver, one pool.
+    "psycopg[binary,pool]>=3.2",
+    # Redis: coordination layer (holds, breaker, idempotency) + ARQ backend
+    "redis>=5.2",
+    "arq>=0.26",
+    # Structured logging
+    "structlog>=24.4",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "httpx>=0.27",
+    "ruff>=0.8",
+]
+
+# ---------------------------------------------------------------------------
+# Build backend: tells the packaging tool where the importable code lives.
+# "src layout" -- code is under src/, so tests import the INSTALLED package
+# rather than accidentally importing the source directory.
+# ---------------------------------------------------------------------------
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/patient_ops"]
+
+# ---------------------------------------------------------------------------
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+addopts = "-q"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "ASYNC"]
