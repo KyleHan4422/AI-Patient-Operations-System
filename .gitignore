@@ -28,5 +28,8 @@ next-env.d.ts
 *.swp
 
 # --- Generated reports ---
+# One file per evaluation run (Phase 11). evals/calibration/ is the opposite
+# kind of artifact and is committed: those measurements are why the thresholds
+# in the code are the numbers they are.
 evals/reports/*.json
 evals/reports/*.md

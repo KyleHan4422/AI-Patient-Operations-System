@@ -79,6 +79,20 @@ class Settings(BaseSettings):
     # sees them -- semantic retries are graph edges, not this.
     llm_max_retries: int = Field(default=2, ge=0, le=5)
 
+    # --- Knowledge base and retrieval ---------------------------------------
+    # The corpus lives in the repository, next to the code that ingests it, so
+    # a clone has the clinic's documents without a data dump.
+    kb_dir: Path = REPO_ROOT / "knowledge_base"
+    # Ignored when LLM_PROVIDER=fake, which brings its own offline embedder.
+    # Changing this invalidates every stored vector: embeddings are only
+    # comparable within one model, so `make ingest` re-embeds everything.
+    embedding_model: str = "text-embedding-3-small"
+    rag_top_k: int = Field(default=4, ge=1, le=20)
+    # The abstention threshold, when set, overrides the value calibrated for
+    # the embedding model in use (adapters/llm/embeddings.py). Empty = use the
+    # calibrated one, which is what the evaluation report measured.
+    rag_min_score: float | None = Field(default=None, ge=0.0, le=1.0)
+
     # --- Chat ---------------------------------------------------------------
     # How many past messages the model is shown per turn. The checkpoint keeps
     # the whole conversation; this only bounds what each LLM call costs.
@@ -97,6 +111,12 @@ class Settings(BaseSettings):
         except (ZoneInfoNotFoundError, ValueError):
             raise ValueError(f"unknown IANA timezone {v!r}") from None
         return v
+
+    @field_validator("rag_min_score", mode="before")
+    @classmethod
+    def _blank_is_unset(cls, v: object) -> object:
+        # `RAG_MIN_SCORE=` in .env means "not set", not "the empty string".
+        return None if isinstance(v, str) and not v.strip() else v
 
     @field_validator("fault_inject")
     @classmethod

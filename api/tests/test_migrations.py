@@ -27,39 +27,46 @@ DOMAIN_TABLES = {
     "appointments",
 }
 CONVERSATION_TABLES = {"conversations", "messages"}
-OUR_TABLES = DOMAIN_TABLES | CONVERSATION_TABLES
+KB_TABLES = {"kb_documents", "kb_chunks"}
+OUR_TABLES = DOMAIN_TABLES | CONVERSATION_TABLES | KB_TABLES
+
+# Extensions the migrations install. Neither type can exist without its
+# extension, so a downgrade that leaves them behind has not undone itself:
+#   btree_gist  the no_overlap EXCLUDE constraint (0001)
+#   vector      kb_chunks.embedding (0003)
+OUR_EXTENSIONS = {"btree_gist", "vector"}
 
 
-def _schema_facts(url: str) -> tuple[set[str], bool, str | None]:
+def _schema_facts(url: str) -> tuple[set[str], set[str], str | None]:
     engine = create_engine(url, poolclass=NullPool)
     try:
         with engine.connect() as conn:
             tables = set(inspect(conn).get_table_names())
-            has_btree_gist = bool(
-                conn.scalar(text("SELECT count(*) FROM pg_extension WHERE extname = 'btree_gist'"))
-            )
+            extensions = set(conn.scalars(text("SELECT extname FROM pg_extension")).all())
             no_overlap_type = conn.scalar(
                 text("SELECT contype::text FROM pg_constraint WHERE conname = 'no_overlap'")
             )
     finally:
         engine.dispose()
-    return tables, has_btree_gist, no_overlap_type
+    return tables, extensions, no_overlap_type
 
 
 def test_migrations_round_trip(test_database_url: str):
     cfg = alembic_config(test_database_url)
 
     command.downgrade(cfg, "base")
-    tables, has_btree_gist, no_overlap = _schema_facts(test_database_url)
+    tables, extensions, no_overlap = _schema_facts(test_database_url)
     assert not (tables & OUR_TABLES), "downgrade must remove every table Alembic owns"
     assert tables >= LANGGRAPH_TABLES, "LangGraph's tables are not Alembic's to drop"
-    assert not has_btree_gist
+    assert not (extensions & OUR_EXTENSIONS), "downgrade must remove the extensions it installed"
     assert no_overlap is None
 
     command.upgrade(cfg, "head")
-    tables, has_btree_gist, no_overlap = _schema_facts(test_database_url)
+    tables, extensions, no_overlap = _schema_facts(test_database_url)
     assert OUR_TABLES <= tables
-    assert has_btree_gist, "the no_overlap constraint cannot exist without btree_gist"
+    # Installed by the migrations, not by db/init/: those scripts run only on a
+    # first volume initialisation, so they reach neither CI nor this database.
+    assert OUR_EXTENSIONS <= extensions
     assert no_overlap == "x", "no_overlap must be an EXCLUDE constraint"
 
 

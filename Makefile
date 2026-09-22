@@ -17,7 +17,7 @@ API_URL  := http://localhost:$(API_PORT)
 .DEFAULT_GOAL := help
 
 .PHONY: help env install up down restart logs ps wait nuke \
-        migrate migration db-check db-reset seed slots psql \
+        migrate migration db-check db-reset seed slots psql ingest search calibrate \
         dev worker web health chat test test-unit lint fmt check-invariants check
 
 ## ---------------------------------------------------------------------------
@@ -81,7 +81,7 @@ migration: ## Draft a migration from model changes: make migration m="add notifi
 db-check: ## Fail if the ORM models and the migrations disagree
 	$(UV) alembic check
 
-db-reset: ## Rebuild the schema from zero and reseed (DESTROYS dev data, conversations included)
+db-reset: ## Rebuild the schema from zero, reseed and re-ingest (DESTROYS dev data)
 	$(UV) alembic downgrade base
 	@# The checkpoints go too: conversations the transcript no longer has must
 	@# not live on as model memory. setup_checkpointer recreates the tables.
@@ -89,9 +89,24 @@ db-reset: ## Rebuild the schema from zero and reseed (DESTROYS dev data, convers
 	  -c "DROP TABLE IF EXISTS checkpoints, checkpoint_blobs, checkpoint_writes, checkpoint_migrations"'
 	@$(MAKE) --no-print-directory migrate
 	@$(MAKE) --no-print-directory seed
+	@# A reset database is one you can demo from, so the knowledge base comes back too.
+	@$(MAKE) --no-print-directory ingest
 
 seed: ## Upsert the demo clinic (safe to re-run)
 	$(UV) python scripts/seed.py
+
+ingest: ## Load knowledge_base/*.md into Postgres (idempotent: unchanged files cost nothing)
+	$(UV) python scripts/ingest.py
+
+# The query travels as an environment variable, never spliced into the shell,
+# so quotes and apostrophes ("what's the policy?") arrive intact.
+search: export KB_QUERY = $(q)
+search: ## Search the knowledge base by eye: make search q="how do I cancel" [k=4]
+	@test -n "$$KB_QUERY" || (echo 'usage: make search q="your question" [k=4]'; exit 1)
+	@cd $(API) && uv run python scripts/search.py "$$KB_QUERY" $(if $(k),--k $(k))
+
+calibrate: ## Measure the abstention threshold: make calibrate [PROVIDER=fake]
+	$(UV) python scripts/calibrate_threshold.py $(if $(PROVIDER),--provider $(PROVIDER))
 
 slots: ## Show bookable slots: make slots p=CROWN [days=7] [from=2026-11-23]
 	$(UV) python scripts/show_slots.py $(or $(p),CLEANING) --days $(or $(days),7) \

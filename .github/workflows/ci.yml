@@ -67,6 +67,14 @@ jobs:
       - name: Checkpointer tables
         run: uv run python scripts/setup_checkpointer.py
 
+      # The two scripts a fresh clone has to run. Ingestion goes through the
+      # offline embedder (LLM_PROVIDER=fake above), so CI needs no API key and
+      # a red build is never a provider outage.
+      - name: Seed and ingest
+        run: |
+          uv run python scripts/seed.py
+          uv run python scripts/ingest.py
+
       # Structural drift only (tables, columns, indexes, FKs, UNIQUE). Alembic
       # does not compare CHECK or EXCLUDE constraints; the test suite does
       # (test_migrations.py compares them via Postgres, test_constraints.py

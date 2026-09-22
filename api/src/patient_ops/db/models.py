@@ -1,7 +1,8 @@
 """The system of record.
 
 Seven domain tables own every correctness guarantee; two conversation tables
-record what was said, for people to read.
+record what was said, for people to read; two knowledge-base tables hold the
+clinic's prose and its embeddings.
 
 The two constraints that matter most are on `Appointment`:
 
@@ -33,6 +34,7 @@ from datetime import date, datetime, time
 from decimal import Decimal
 from typing import Any
 
+from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
     BigInteger,
     Boolean,
@@ -64,10 +66,18 @@ NAMING_CONVENTION = {
 }
 
 SPECIALTIES = ("general", "hygienist", "orthodontist")
+KB_CATEGORIES = ("policy", "clinical", "scheduling", "general")
 APPOINTMENT_STATUSES = ("booked", "cancelled", "completed")
 BOOKING_SOURCES = ("web", "voice", "staff")
 CHANNELS = ("web", "voice")
 MESSAGE_ROLES = ("user", "assistant")
+
+# Dimensions of one embedding vector -- text-embedding-3-small's native size.
+# Part of the schema, not configuration: a model of a different size needs a
+# migration, and that friction is correct. Vectors from two different models
+# are not comparable at all, so kb_documents also records which model produced
+# them and retrieval filters on it.
+EMBEDDING_DIM = 1536
 
 # Tables LangGraph's checkpointer creates and versions itself (its setup() runs
 # from `make migrate`). They share this database but not this metadata, so
@@ -268,3 +278,64 @@ class Message(Base):
     # schemaless is the right call.
     meta: Mapped[dict[str, Any]] = mapped_column(JSONB, server_default=text("'{}'::jsonb"))
     created_at: Mapped[datetime] = _created_at()
+
+
+# ---------------------------------------------------------------------------
+# Knowledge base -- the narrative half of what the clinic knows
+# ---------------------------------------------------------------------------
+# The split is deliberate: exact facts (which plans are accepted, what a crown
+# costs, when a provider works) live in the tables above and are read by exact
+# queries. These two tables hold the prose -- policies, aftercare, what to
+# expect -- which is what similarity search is actually good at.
+class KbDocument(Base):
+    """One markdown file under knowledge_base/, as last ingested."""
+
+    __tablename__ = "kb_documents"
+    __table_args__ = (CheckConstraint(_one_of("category", KB_CATEGORIES), name="category"),)
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
+    # Path relative to the corpus directory ("aftercare.md") -- the natural key
+    # ingestion upserts on, and stable across machines.
+    source_path: Mapped[str] = mapped_column(Text, unique=True)
+    title: Mapped[str] = mapped_column(Text)
+    category: Mapped[str] = mapped_column(Text)
+    # Shown with every citation: a policy answer without a date is a rumour.
+    effective_date: Mapped[date] = mapped_column(Date)
+    # The three values ingestion compares to decide whether this document has
+    # to be chunked and embedded again. The file's own hash is not enough: new
+    # chunking rules or a new embedding model make the stored vectors stale
+    # while the file itself is untouched.
+    content_hash: Mapped[str] = mapped_column(Text)
+    chunker_version: Mapped[int] = mapped_column(SmallInteger)
+    embedding_model: Mapped[str] = mapped_column(Text)
+    ingested_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class KbChunk(Base):
+    """A retrievable passage: a section of a document, with its vector."""
+
+    __tablename__ = "kb_chunks"
+    __table_args__ = (
+        CheckConstraint("approx_tokens > 0", name="positive_tokens"),
+        # Also the index behind "this document's chunks, in order", which is
+        # every read that is not a similarity search.
+        UniqueConstraint("document_id", "ordinal"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
+    # CASCADE: re-ingesting a changed document deletes its chunks and writes
+    # new ones, in one transaction. Chunk ids are therefore not stable across
+    # ingests -- citations quote title + heading_path, never an id.
+    document_id: Mapped[int] = mapped_column(ForeignKey("kb_documents.id", ondelete="CASCADE"))
+    ordinal: Mapped[int] = mapped_column(SmallInteger)
+    # "Aftercare > After an Extraction > First 24 Hours" -- the citation a
+    # patient can actually check, built by the chunker from the headings.
+    heading_path: Mapped[str] = mapped_column(Text)
+    content: Mapped[str] = mapped_column(Text)
+    approx_tokens: Mapped[int] = mapped_column(SmallInteger)
+    # No index, on purpose. At this corpus size an exact scan is microseconds,
+    # and an approximate index (HNSW/IVFFlat) would trade recall for a speed-up
+    # nobody can measure. README states the row count at which that changes.
+    embedding: Mapped[list[float]] = mapped_column(Vector(EMBEDDING_DIM))

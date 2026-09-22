@@ -5,8 +5,9 @@ name: patient-ops
 
 services:
   postgres:
-    # pgvector image = Postgres 16 with the `vector` extension preinstalled.
-    # We need it from Phase 3 onward for embedding similarity search.
+    # pgvector image = Postgres 16 with the `vector` extension available.
+    # Migration 0003 installs it; the knowledge base stores its embeddings in
+    # a vector(1536) column and searches them by cosine distance.
     image: pgvector/pgvector:pg16
     container_name: patient-ops-postgres
     environment:
@@ -18,9 +19,10 @@ services:
       # Postgres install. Hard-coding host ports breaks on other machines.
       - "${POSTGRES_HOST_PORT:-5433}:5432"
     volumes:
+      # No /docker-entrypoint-initdb.d mount: those scripts run only when the
+      # volume is first created, so they would never reach CI's database or
+      # the test database. Extensions are installed by migrations instead.
       - pgdata:/var/lib/postgresql/data
-      # Scripts here run ONCE, when the volume is first initialised.
-      - ./db/init:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-patient_ops} -d ${POSTGRES_DB:-patient_ops}"]
       interval: 3s

@@ -47,13 +47,18 @@ GUARDED_DIR = SRC_ROOT / "patient_ops" / "agents"
 
 ALLOW_MARKER = "noqa: invariant"
 
-# Modules agents/ must not import -- each one can change state. A module and
-# everything beneath it: "patient_ops.db" also covers "patient_ops.db.repo".
+# Modules agents/ must not import -- each one can change state, or is a layer
+# agents are not allowed to reach into directly. A module and everything
+# beneath it: "patient_ops.db" also covers "patient_ops.db.repo".
 # Grows with the project: Phase 6 adds patient_ops.tools.booking, Phase 10
 # adds patient_ops.tools.escalation.
 DENIED_IMPORTS: tuple[str, ...] = (
     "patient_ops.db",
     "patient_ops.adapters",
+    # Retrieval is read-only, but rag/ingest.py writes, and an agent that can
+    # reach the corpus can rewrite what it is later grounded against. Agents
+    # search through the read-only tools in tools/ instead.
+    "patient_ops.rag",
     "patient_ops.redis_layer",
     "patient_ops.jobs",
     "sqlalchemy",

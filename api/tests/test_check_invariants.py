@@ -33,6 +33,8 @@ def scan(tmp_path: Path, source: str) -> list[str]:
         "from .. import redis_layer",
         "import sqlalchemy.orm",
         "from redis.asyncio import Redis",
+        "from patient_ops.rag.retrieve import search_knowledge_base",  # tools/ only
+        "import patient_ops.rag.ingest",
         "def later():\n    from patient_ops.db.repo import find_patients\n",  # function-local
         # type-only imports count: agents should not even type against the ORM
         "if TYPE_CHECKING:\n    from patient_ops.db.models import Patient\n",

@@ -1,0 +1,756 @@
+{
+  "model": "text-embedding-3-small",
+  "generated": "2026-09-22",
+  "top_k": 4,
+  "false_answer_cost": 3.0,
+  "min_answer_rate": 0.6,
+  "floor_binding": false,
+  "threshold": 0.3451,
+  "separable": true,
+  "splits": {
+    "calibration": {
+      "questions": 32,
+      "answerable": 18,
+      "off_topic": 3,
+      "undecidable": 11,
+      "answer_rate": 1.0,
+      "off_topic_abstain_rate": 1.0,
+      "undecidable_abstain_rate": 0.0,
+      "hit_at_k": 1.0
+    },
+    "holdout": {
+      "questions": 16,
+      "answerable": 8,
+      "off_topic": 2,
+      "undecidable": 6,
+      "answer_rate": 1.0,
+      "off_topic_abstain_rate": 1.0,
+      "undecidable_abstain_rate": 0.0,
+      "hit_at_k": 1.0
+    }
+  },
+  "by_kind": [
+    {
+      "kind": "direct",
+      "answerable": true,
+      "n": 12,
+      "median_score": 0.631,
+      "max_score": 0.725,
+      "correct": 12
+    },
+    {
+      "kind": "paraphrase",
+      "answerable": true,
+      "n": 10,
+      "median_score": 0.502,
+      "max_score": 0.644,
+      "correct": 10
+    },
+    {
+      "kind": "multi_hop",
+      "answerable": true,
+      "n": 4,
+      "median_score": 0.599,
+      "max_score": 0.627,
+      "correct": 4
+    },
+    {
+      "kind": "near_miss",
+      "answerable": false,
+      "n": 12,
+      "median_score": 0.476,
+      "max_score": 0.675,
+      "correct": 0
+    },
+    {
+      "kind": "structured",
+      "answerable": false,
+      "n": 5,
+      "median_score": 0.427,
+      "max_score": 0.525,
+      "correct": 0
+    },
+    {
+      "kind": "off_topic",
+      "answerable": false,
+      "n": 5,
+      "median_score": 0.158,
+      "max_score": 0.257,
+      "correct": 5
+    }
+  ],
+  "scores": [
+    {
+      "id": "cancel_notice",
+      "kind": "direct",
+      "split": "calibration",
+      "answerable": true,
+      "best_score": 0.7033,
+      "hit": true,
+      "retrieved": [
+        "appointments-and-cancellations.md",
+        "appointments-and-cancellations.md",
+        "appointments-and-cancellations.md",
+        "appointments-and-cancellations.md"
+      ]
+    },
+    {
+      "id": "late_arrival",
+      "kind": "direct",
+      "split": "calibration",
+      "answerable": true,
+      "best_score": 0.7253,
+      "hit": true,
+      "retrieved": [
+        "appointments-and-cancellations.md",
+        "new-patients.md",
+        "new-patients.md",
+        "appointments-and-cancellations.md"
+      ]
+    },
+    {
+      "id": "waitlist",
+      "kind": "direct",
+      "split": "holdout",
+      "answerable": true,
+      "best_score": 0.6377,
+      "hit": true,
+      "retrieved": [
+        "appointments-and-cancellations.md",
+        "appointments-and-cancellations.md",
+        "appointments-and-cancellations.md",
+        "appointments-and-cancellations.md"
+      ]
+    },
+    {
+      "id": "first_visit_bring",
+      "kind": "direct",
+      "split": "calibration",
+      "answerable": true,
+      "best_score": 0.6252,
+      "hit": true,
+      "retrieved": [
+        "before-your-visit.md",
+        "new-patients.md",
+        "new-patients.md",
+        "visiting-the-clinic.md"
+      ]
+    },
+    {
+      "id": "child_guardian",
+      "kind": "direct",
+      "split": "calibration",
+      "answerable": true,
+      "best_score": 0.6154,
+      "hit": true,
+      "retrieved": [
+        "new-patients.md",
+        "new-patients.md",
+        "before-your-visit.md",
+        "before-your-visit.md"
+      ]
+    },
+    {
+      "id": "extraction_straw",
+      "kind": "direct",
+      "split": "calibration",
+      "answerable": true,
+      "best_score": 0.5524,
+      "hit": true,
+      "retrieved": [
+        "aftercare.md",
+        "procedures-explained.md",
+        "aftercare.md",
+        "aftercare.md"
+      ]
+    },
+    {
+      "id": "dry_socket",
+      "kind": "direct",
+      "split": "holdout",
+      "answerable": true,
+      "best_score": 0.5381,
+      "hit": true,
+      "retrieved": [
+        "aftercare.md",
+        "aftercare.md",
+        "aftercare.md",
+        "aftercare.md"
+      ]
+    },
+    {
+      "id": "temporary_crown_off",
+      "kind": "direct",
+      "split": "calibration",
+      "answerable": true,
+      "best_score": 0.7154,
+      "hit": true,
+      "retrieved": [
+        "aftercare.md",
+        "dental-emergencies.md",
+        "procedures-explained.md",
+        "dental-emergencies.md"
+      ]
+    },
+    {
+      "id": "knocked_out_tooth",
+      "kind": "direct",
+      "split": "calibration",
+      "answerable": true,
+      "best_score": 0.6753,
+      "hit": true,
+      "retrieved": [
+        "dental-emergencies.md",
+        "dental-emergencies.md",
+        "dental-emergencies.md",
+        "aftercare.md"
+      ]
+    },
+    {
+      "id": "parking_validation",
+      "kind": "direct",
+      "split": "holdout",
+      "answerable": true,
+      "best_score": 0.529,
+      "hit": true,
+      "retrieved": [
+        "visiting-the-clinic.md",
+        "insurance-and-payment.md",
+        "visiting-the-clinic.md",
+        "insurance-and-payment.md"
+      ]
+    },
+    {
+      "id": "records_request",
+      "kind": "direct",
+      "split": "calibration",
+      "answerable": true,
+      "best_score": 0.7181,
+      "hit": true,
+      "retrieved": [
+        "records-and-privacy.md",
+        "records-and-privacy.md",
+        "records-and-privacy.md",
+        "new-patients.md"
+      ]
+    },
+    {
+      "id": "payment_methods",
+      "kind": "direct",
+      "split": "holdout",
+      "answerable": true,
+      "best_score": 0.5463,
+      "hit": true,
+      "retrieved": [
+        "insurance-and-payment.md",
+        "insurance-and-payment.md",
+        "insurance-and-payment.md",
+        "insurance-and-payment.md"
+      ]
+    },
+    {
+      "id": "eat_after_filling",
+      "kind": "paraphrase",
+      "split": "calibration",
+      "answerable": true,
+      "best_score": 0.6241,
+      "hit": true,
+      "retrieved": [
+        "aftercare.md",
+        "before-your-visit.md",
+        "dental-emergencies.md",
+        "aftercare.md"
+      ]
+    },
+    {
+      "id": "crown_how_many_visits",
+      "kind": "paraphrase",
+      "split": "calibration",
+      "answerable": true,
+      "best_score": 0.5348,
+      "hit": true,
+      "retrieved": [
+        "procedures-explained.md",
+        "aftercare.md",
+        "procedures-explained.md",
+        "dental-emergencies.md"
+      ]
+    },
+    {
+      "id": "root_canal_hurt",
+      "kind": "paraphrase",
+      "split": "holdout",
+      "answerable": true,
+      "best_score": 0.644,
+      "hit": true,
+      "retrieved": [
+        "procedures-explained.md",
+        "procedures-explained.md",
+        "procedures-explained.md",
+        "procedures-explained.md"
+      ]
+    },
+    {
+      "id": "dental_anxiety",
+      "kind": "paraphrase",
+      "split": "calibration",
+      "answerable": true,
+      "best_score": 0.4437,
+      "hit": true,
+      "retrieved": [
+        "before-your-visit.md",
+        "before-your-visit.md",
+        "new-patients.md",
+        "before-your-visit.md"
+      ]
+    },
+    {
+      "id": "pregnancy_cleaning",
+      "kind": "paraphrase",
+      "split": "calibration",
+      "answerable": true,
+      "best_score": 0.6152,
+      "hit": true,
+      "retrieved": [
+        "before-your-visit.md",
+        "new-patients.md",
+        "procedures-explained.md",
+        "aftercare.md"
+      ]
+    },
+    {
+      "id": "blood_thinner",
+      "kind": "paraphrase",
+      "split": "holdout",
+      "answerable": true,
+      "best_score": 0.497,
+      "hit": true,
+      "retrieved": [
+        "before-your-visit.md",
+        "before-your-visit.md",
+        "before-your-visit.md",
+        "before-your-visit.md"
+      ]
+    },
+    {
+      "id": "wheelchair_access",
+      "kind": "paraphrase",
+      "split": "calibration",
+      "answerable": true,
+      "best_score": 0.4891,
+      "hit": true,
+      "retrieved": [
+        "visiting-the-clinic.md",
+        "visiting-the-clinic.md",
+        "records-and-privacy.md",
+        "visiting-the-clinic.md"
+      ]
+    },
+    {
+      "id": "interpreter",
+      "kind": "paraphrase",
+      "split": "calibration",
+      "answerable": true,
+      "best_score": 0.4488,
+      "hit": true,
+      "retrieved": [
+        "visiting-the-clinic.md",
+        "records-and-privacy.md",
+        "visiting-the-clinic.md",
+        "dental-emergencies.md"
+      ]
+    },
+    {
+      "id": "surprise_balance",
+      "kind": "paraphrase",
+      "split": "calibration",
+      "answerable": true,
+      "best_score": 0.4554,
+      "hit": true,
+      "retrieved": [
+        "insurance-and-payment.md",
+        "insurance-and-payment.md",
+        "insurance-and-payment.md",
+        "insurance-and-payment.md"
+      ]
+    },
+    {
+      "id": "spouse_asking",
+      "kind": "paraphrase",
+      "split": "holdout",
+      "answerable": true,
+      "best_score": 0.5075,
+      "hit": true,
+      "retrieved": [
+        "aftercare.md",
+        "records-and-privacy.md",
+        "records-and-privacy.md",
+        "appointments-and-cancellations.md"
+      ]
+    },
+    {
+      "id": "bleeding_after_extraction",
+      "kind": "multi_hop",
+      "split": "calibration",
+      "answerable": true,
+      "best_score": 0.4952,
+      "hit": true,
+      "retrieved": [
+        "aftercare.md",
+        "dental-emergencies.md",
+        "aftercare.md",
+        "dental-emergencies.md"
+      ]
+    },
+    {
+      "id": "switching_dentists",
+      "kind": "multi_hop",
+      "split": "calibration",
+      "answerable": true,
+      "best_score": 0.627,
+      "hit": true,
+      "retrieved": [
+        "new-patients.md",
+        "records-and-privacy.md",
+        "new-patients.md",
+        "records-and-privacy.md"
+      ]
+    },
+    {
+      "id": "sedation_then_extraction",
+      "kind": "multi_hop",
+      "split": "calibration",
+      "answerable": true,
+      "best_score": 0.5745,
+      "hit": true,
+      "retrieved": [
+        "before-your-visit.md",
+        "aftercare.md",
+        "aftercare.md",
+        "procedures-explained.md"
+      ]
+    },
+    {
+      "id": "crown_instalments",
+      "kind": "multi_hop",
+      "split": "holdout",
+      "answerable": true,
+      "best_score": 0.6236,
+      "hit": true,
+      "retrieved": [
+        "procedures-explained.md",
+        "insurance-and-payment.md",
+        "aftercare.md",
+        "new-patients.md"
+      ]
+    },
+    {
+      "id": "invisalign",
+      "kind": "near_miss",
+      "split": "calibration",
+      "answerable": false,
+      "best_score": 0.4181,
+      "hit": null,
+      "retrieved": [
+        "insurance-and-payment.md",
+        "insurance-and-payment.md",
+        "insurance-and-payment.md",
+        "insurance-and-payment.md"
+      ]
+    },
+    {
+      "id": "implants",
+      "kind": "near_miss",
+      "split": "calibration",
+      "answerable": false,
+      "best_score": 0.3988,
+      "hit": null,
+      "retrieved": [
+        "procedures-explained.md",
+        "aftercare.md",
+        "procedures-explained.md",
+        "before-your-visit.md"
+      ]
+    },
+    {
+      "id": "orthodontics",
+      "kind": "near_miss",
+      "split": "holdout",
+      "answerable": false,
+      "best_score": 0.3682,
+      "hit": null,
+      "retrieved": [
+        "new-patients.md",
+        "insurance-and-payment.md",
+        "before-your-visit.md",
+        "procedures-explained.md"
+      ]
+    },
+    {
+      "id": "night_guard",
+      "kind": "near_miss",
+      "split": "calibration",
+      "answerable": false,
+      "best_score": 0.3987,
+      "hit": null,
+      "retrieved": [
+        "dental-emergencies.md",
+        "procedures-explained.md",
+        "aftercare.md",
+        "dental-emergencies.md"
+      ]
+    },
+    {
+      "id": "sedation_for_children",
+      "kind": "near_miss",
+      "split": "calibration",
+      "answerable": false,
+      "best_score": 0.5553,
+      "hit": null,
+      "retrieved": [
+        "before-your-visit.md",
+        "new-patients.md",
+        "before-your-visit.md",
+        "before-your-visit.md"
+      ]
+    },
+    {
+      "id": "after_hours_number",
+      "kind": "near_miss",
+      "split": "holdout",
+      "answerable": false,
+      "best_score": 0.6292,
+      "hit": null,
+      "retrieved": [
+        "dental-emergencies.md",
+        "aftercare.md",
+        "aftercare.md",
+        "dental-emergencies.md"
+      ]
+    },
+    {
+      "id": "missed_appointment_fee",
+      "kind": "near_miss",
+      "split": "calibration",
+      "answerable": false,
+      "best_score": 0.6752,
+      "hit": null,
+      "retrieved": [
+        "appointments-and-cancellations.md",
+        "appointments-and-cancellations.md",
+        "appointments-and-cancellations.md",
+        "appointments-and-cancellations.md"
+      ]
+    },
+    {
+      "id": "garage_hourly_rate",
+      "kind": "near_miss",
+      "split": "calibration",
+      "answerable": false,
+      "best_score": 0.5036,
+      "hit": null,
+      "retrieved": [
+        "visiting-the-clinic.md",
+        "insurance-and-payment.md",
+        "insurance-and-payment.md",
+        "insurance-and-payment.md"
+      ]
+    },
+    {
+      "id": "cleaning_frequency",
+      "kind": "near_miss",
+      "split": "calibration",
+      "answerable": false,
+      "best_score": 0.5311,
+      "hit": null,
+      "retrieved": [
+        "procedures-explained.md",
+        "before-your-visit.md",
+        "before-your-visit.md",
+        "new-patients.md"
+      ]
+    },
+    {
+      "id": "whitening_duration",
+      "kind": "near_miss",
+      "split": "holdout",
+      "answerable": false,
+      "best_score": 0.5705,
+      "hit": null,
+      "retrieved": [
+        "procedures-explained.md",
+        "aftercare.md",
+        "aftercare.md",
+        "aftercare.md"
+      ]
+    },
+    {
+      "id": "bringing_a_dog",
+      "kind": "near_miss",
+      "split": "calibration",
+      "answerable": false,
+      "best_score": 0.4485,
+      "hit": null,
+      "retrieved": [
+        "new-patients.md",
+        "before-your-visit.md",
+        "new-patients.md",
+        "appointments-and-cancellations.md"
+      ]
+    },
+    {
+      "id": "second_opinion_consult",
+      "kind": "near_miss",
+      "split": "holdout",
+      "answerable": false,
+      "best_score": 0.3846,
+      "hit": null,
+      "retrieved": [
+        "aftercare.md",
+        "insurance-and-payment.md",
+        "insurance-and-payment.md",
+        "new-patients.md"
+      ]
+    },
+    {
+      "id": "accepts_aetna",
+      "kind": "structured",
+      "split": "calibration",
+      "answerable": false,
+      "best_score": 0.427,
+      "hit": null,
+      "retrieved": [
+        "insurance-and-payment.md",
+        "insurance-and-payment.md",
+        "insurance-and-payment.md",
+        "insurance-and-payment.md"
+      ]
+    },
+    {
+      "id": "crown_price",
+      "kind": "structured",
+      "split": "calibration",
+      "answerable": false,
+      "best_score": 0.4548,
+      "hit": null,
+      "retrieved": [
+        "procedures-explained.md",
+        "aftercare.md",
+        "dental-emergencies.md",
+        "procedures-explained.md"
+      ]
+    },
+    {
+      "id": "open_saturday",
+      "kind": "structured",
+      "split": "calibration",
+      "answerable": false,
+      "best_score": 0.3492,
+      "hit": null,
+      "retrieved": [
+        "appointments-and-cancellations.md",
+        "appointments-and-cancellations.md",
+        "dental-emergencies.md",
+        "appointments-and-cancellations.md"
+      ]
+    },
+    {
+      "id": "provider_availability",
+      "kind": "structured",
+      "split": "holdout",
+      "answerable": false,
+      "best_score": 0.41,
+      "hit": null,
+      "retrieved": [
+        "visiting-the-clinic.md",
+        "visiting-the-clinic.md",
+        "appointments-and-cancellations.md",
+        "visiting-the-clinic.md"
+      ]
+    },
+    {
+      "id": "cleaning_duration",
+      "kind": "structured",
+      "split": "holdout",
+      "answerable": false,
+      "best_score": 0.5246,
+      "hit": null,
+      "retrieved": [
+        "new-patients.md",
+        "appointments-and-cancellations.md",
+        "appointments-and-cancellations.md",
+        "appointments-and-cancellations.md"
+      ]
+    },
+    {
+      "id": "world_series",
+      "kind": "off_topic",
+      "split": "calibration",
+      "answerable": false,
+      "best_score": 0.0915,
+      "hit": null,
+      "retrieved": [
+        "aftercare.md",
+        "aftercare.md",
+        "procedures-explained.md",
+        "dental-emergencies.md"
+      ]
+    },
+    {
+      "id": "weather",
+      "kind": "off_topic",
+      "split": "calibration",
+      "answerable": false,
+      "best_score": 0.158,
+      "hit": null,
+      "retrieved": [
+        "visiting-the-clinic.md",
+        "before-your-visit.md",
+        "visiting-the-clinic.md",
+        "appointments-and-cancellations.md"
+      ]
+    },
+    {
+      "id": "prompt_injection",
+      "kind": "off_topic",
+      "split": "calibration",
+      "answerable": false,
+      "best_score": 0.2465,
+      "hit": null,
+      "retrieved": [
+        "before-your-visit.md",
+        "before-your-visit.md",
+        "records-and-privacy.md",
+        "new-patients.md"
+      ]
+    },
+    {
+      "id": "capital_of_portugal",
+      "kind": "off_topic",
+      "split": "holdout",
+      "answerable": false,
+      "best_score": 0.1212,
+      "hit": null,
+      "retrieved": [
+        "procedures-explained.md",
+        "visiting-the-clinic.md",
+        "visiting-the-clinic.md",
+        "dental-emergencies.md"
+      ]
+    },
+    {
+      "id": "leaking_tap",
+      "kind": "off_topic",
+      "split": "holdout",
+      "answerable": false,
+      "best_score": 0.2568,
+      "hit": null,
+      "retrieved": [
+        "dental-emergencies.md",
+        "dental-emergencies.md",
+        "dental-emergencies.md",
+        "dental-emergencies.md"
+      ]
+    }
+  ]
+}

@@ -30,6 +30,9 @@ dependencies = [
     "langgraph-checkpoint-postgres>=3.1",
     # LLM provider, reached only through adapters/llm/
     "langchain-openai>=1.6",
+    # pgvector's SQLAlchemy type + psycopg adapter, for the knowledge base
+    # embeddings. The `vector` extension itself is created by migration 0003.
+    "pgvector>=0.3",
 ]
 
 [project.optional-dependencies]
@@ -40,6 +43,9 @@ dev = [
     "ruff>=0.8",
     # Property-based tests for the slot computation
     "hypothesis>=6.120",
+    # Only scripts/calibrate_threshold.py draws the score distribution. A dev
+    # dependency, not a runtime one: the app never plots anything.
+    "matplotlib>=3.9",
 ]
 
 # ---------------------------------------------------------------------------
