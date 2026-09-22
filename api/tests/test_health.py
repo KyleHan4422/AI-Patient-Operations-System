@@ -82,6 +82,19 @@ def test_postgres_is_critical_and_redis_is_not():
     assert "redis" not in CRITICAL_DEPENDENCIES
 
 
+def test_classify_checkpointer_failure_is_unhealthy():
+    """Without the checkpointer's pool every conversation forgets itself."""
+    status, degraded = classify(
+        {
+            "postgres": ProbeResult(ok=True),
+            "checkpointer": ProbeResult(ok=False),
+            "redis": ProbeResult(ok=True),
+        }
+    )
+    assert status == "unhealthy"
+    assert degraded == []
+
+
 # ---------------------------------------------------------------------------
 # run_probe() -- timeout budget
 # ---------------------------------------------------------------------------

@@ -36,6 +36,9 @@ jobs:
       # Property tests replay the same examples on every run, so a red build
       # is reproducible locally with HYPOTHESIS_PROFILE=ci.
       HYPOTHESIS_PROFILE: ci
+      # No API key in CI, by design: every test runs on the deterministic
+      # echo model, so a red build is never a flaky model answer.
+      LLM_PROVIDER: fake
 
     steps:
       - uses: actions/checkout@v4
@@ -58,6 +61,11 @@ jobs:
 
       - name: Migrate
         run: uv run alembic upgrade head
+
+      # LangGraph's checkpoint tables. Run BEFORE `alembic check` on purpose:
+      # the check passing with these tables present proves env.py ignores them.
+      - name: Checkpointer tables
+        run: uv run python scripts/setup_checkpointer.py
 
       # Structural drift only (tables, columns, indexes, FKs, UNIQUE). Alembic
       # does not compare CHECK or EXCLUDE constraints; the test suite does

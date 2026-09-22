@@ -10,7 +10,8 @@ Two kinds of test live in this suite:
               a database fixture is marked `db` automatically.
 
 The test database is dropped and rebuilt at the start of every session by
-running the real migrations, so what gets tested is the schema the migrations
+running the real migrations (and LangGraph's checkpointer setup, exactly as
+`make migrate` does), so what gets tested is the schema the migrations
 produce -- not the one the ORM models describe.
 
 Why not the usual "wrap each test in a transaction and roll it back" fixture:
@@ -36,13 +37,17 @@ from sqlalchemy.pool import NullPool
 
 from patient_ops.adapters.calendar.fake import FakeCalendar
 from patient_ops.config import Settings, get_settings
-from patient_ops.db.models import Base
+from patient_ops.db.models import LANGGRAPH_TABLES, Base
 from patient_ops.db.session import build_engine, build_session_factory
 from patient_ops.domain.availability import SchedulingPolicy
+from patient_ops.graph.checkpointer import setup_checkpointer
 from tests.factories import FIXED_NOW, TZ, Clinic, build_minimal_clinic
 
 API_DIR = Path(__file__).resolve().parents[1]
 TEST_DB_NAME = "patient_ops_test"
+# Emptied between tests. Not checkpoint_migrations: it records which version
+# of LangGraph's schema is installed, not test data.
+LANGGRAPH_DATA_TABLES = sorted(LANGGRAPH_TABLES - {"checkpoint_migrations"})
 DB_FIXTURES = {"test_database_url", "engine", "session_factory", "clinic", "calendar"}
 
 # Property tests: reproducible in CI (same examples every run), exploratory
@@ -94,8 +99,10 @@ def test_database_url() -> str:
     finally:
         admin.dispose()
 
-    url = base.set(database=TEST_DB_NAME).render_as_string(hide_password=False)
+    test_url = base.set(database=TEST_DB_NAME)
+    url = test_url.render_as_string(hide_password=False)
     command.upgrade(alembic_config(url), "head")
+    setup_checkpointer(test_url.set(drivername="postgresql").render_as_string(hide_password=False))
     return url
 
 
@@ -116,7 +123,7 @@ async def truncate_all(engine: AsyncEngine) -> None:
     database = engine.url.database or ""
     if not database.endswith("_test"):
         raise RuntimeError(f"refusing to TRUNCATE {database!r}: not a *_test database")
-    tables = ", ".join(t.name for t in Base.metadata.sorted_tables)
+    tables = ", ".join([*(t.name for t in Base.metadata.sorted_tables), *LANGGRAPH_DATA_TABLES])
     async with engine.begin() as conn:
         await conn.execute(text(f"TRUNCATE {tables} RESTART IDENTITY CASCADE"))
 

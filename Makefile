@@ -18,7 +18,7 @@ API_URL  := http://localhost:$(API_PORT)
 
 .PHONY: help env install up down restart logs ps wait nuke \
         migrate migration db-check db-reset seed slots psql \
-        dev worker web health test test-unit lint fmt check-invariants check
+        dev worker web health chat test test-unit lint fmt check-invariants check
 
 ## ---------------------------------------------------------------------------
 ## Setup
@@ -70,8 +70,9 @@ nuke: ## Destroy containers AND the Postgres volume (re-runs db/init scripts)
 ## ---------------------------------------------------------------------------
 ## Database: schema, demo data, inspection
 ## ---------------------------------------------------------------------------
-migrate: ## Apply every migration (alembic upgrade head)
+migrate: ## Apply every migration, then create/upgrade LangGraph's checkpoint tables
 	$(UV) alembic upgrade head
+	$(UV) python scripts/setup_checkpointer.py
 
 migration: ## Draft a migration from model changes: make migration m="add notifications"
 	@test -n "$(m)" || (echo 'usage: make migration m="describe the change"'; exit 1)
@@ -80,9 +81,13 @@ migration: ## Draft a migration from model changes: make migration m="add notifi
 db-check: ## Fail if the ORM models and the migrations disagree
 	$(UV) alembic check
 
-db-reset: ## Rebuild the schema from zero and reseed (DESTROYS dev data)
+db-reset: ## Rebuild the schema from zero and reseed (DESTROYS dev data, conversations included)
 	$(UV) alembic downgrade base
-	$(UV) alembic upgrade head
+	@# The checkpoints go too: conversations the transcript no longer has must
+	@# not live on as model memory. setup_checkpointer recreates the tables.
+	docker exec patient-ops-postgres sh -c 'psql -q -U "$$POSTGRES_USER" -d "$$POSTGRES_DB" \
+	  -c "DROP TABLE IF EXISTS checkpoints, checkpoint_blobs, checkpoint_writes, checkpoint_migrations"'
+	@$(MAKE) --no-print-directory migrate
 	@$(MAKE) --no-print-directory seed
 
 seed: ## Upsert the demo clinic (safe to re-run)
@@ -114,6 +119,16 @@ web: ## Run the Next.js dev server
 health: ## Print /health with its HTTP status code
 	@code=$$(curl -s -o /tmp/patient-ops-health.json -w '%{http_code}' $(API_URL)/health) \
 	  && echo "HTTP $$code" && cat /tmp/patient-ops-health.json | $(API)/.venv/bin/python -m json.tool
+
+# The message travels as an environment variable, never spliced into the shell
+# command, so quotes and apostrophes ("What's my name?") arrive intact.
+chat: export CHAT_MESSAGE = $(m)
+chat: export CHAT_THREAD = $(t)
+chat: ## Send one chat turn, print the raw SSE stream: make chat m="hello" [t=<thread_id>]
+	@test -n "$$CHAT_MESSAGE" || (echo 'usage: make chat m="your message" [t=<thread_id>]'; exit 1)
+	@python3 -c 'import json, os; t = os.environ["CHAT_THREAD"]; \
+	  print(json.dumps({"message": os.environ["CHAT_MESSAGE"], **({"thread_id": t} if t else {})}))' \
+	  | curl -sN -X POST $(API_URL)/api/chat/turn -H 'Content-Type: application/json' --data-binary @-
 
 test: ## Run the whole Python test suite (needs `make up`)
 	$(UV) pytest

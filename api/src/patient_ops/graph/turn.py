@@ -1,0 +1,71 @@
+"""One turn of conversation, independent of how it arrived.
+
+The HTTP route turns these events into SSE; the Phase 13 voice channel will
+turn them into speech. Neither re-implements what a turn is.
+"""
+
+from __future__ import annotations
+
+import uuid
+from collections.abc import AsyncIterator
+from dataclasses import dataclass
+from typing import Any
+
+from langchain_core.messages import HumanMessage
+from langchain_core.runnables import RunnableConfig
+from langgraph.graph.state import CompiledStateGraph
+
+from patient_ops.graph.build import USER_FACING_NODES
+from patient_ops.graph.context import GraphContext
+
+
+@dataclass(frozen=True)
+class Token:
+    """A piece of the reply, as the model writes it. Provisional."""
+
+    text: str
+
+
+@dataclass(frozen=True)
+class Final:
+    """The authoritative reply. Emitted only after the turn is saved."""
+
+    text: str
+
+
+def turn_input(text: str) -> dict[str, Any]:
+    # The per-turn fields are reset explicitly. The checkpoint carries every
+    # field into the next turn, so without this a turn that fails before
+    # `respond` would still hold the previous turn's reply.
+    return {"messages": [HumanMessage(text)], "draft": None, "final_response": None}
+
+
+def turn_config(thread_id: uuid.UUID) -> RunnableConfig:
+    return {"configurable": {"thread_id": str(thread_id)}}
+
+
+async def run_turn(
+    graph: CompiledStateGraph, *, text: str, context: GraphContext
+) -> AsyncIterator[Token | Final]:
+    final: str | None = None
+    async for mode, chunk in graph.astream(
+        turn_input(text),
+        turn_config(context.thread_id),
+        context=context,
+        stream_mode=["messages", "updates"],
+        # Save each step before starting the next, so that when the loop ends
+        # the whole turn is in Postgres.
+        durability="sync",
+    ):
+        if mode == "messages":
+            message, metadata = chunk
+            if metadata.get("langgraph_node") in USER_FACING_NODES and message.text:
+                yield Token(message.text)
+        elif mode == "updates" and "respond" in chunk:
+            final = chunk["respond"]["final_response"]
+
+    if final is None:  # every path ends in respond; reaching here is a graph bug
+        raise RuntimeError("turn finished without passing through respond")
+    # After the loop, not when respond's update arrives: an acknowledgement
+    # sent before the save would be a promise the system might not keep.
+    yield Final(final)

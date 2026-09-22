@@ -1,7 +1,7 @@
 """Read-only queries over the system of record.
 
-Every function here reads; none writes. Phase 1 has exactly two write paths --
-FakeCalendar.book() and scripts/seed.py -- and neither lives in this module.
+Every function here reads; none writes. The write paths -- FakeCalendar.book(),
+db/transcript.py and scripts/seed.py -- all live elsewhere.
 Reads and writes are separated at the module level so that the architectural
 check can reason about imports rather than about method names.
 
@@ -11,6 +11,7 @@ Rows that feed pure domain logic are returned as domain objects
 
 from __future__ import annotations
 
+import uuid
 from collections.abc import Collection
 from datetime import date, datetime
 
@@ -20,7 +21,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from patient_ops.db.models import (
     Appointment,
     ClinicClosure,
+    Conversation,
     InsurancePlan,
+    Message,
     Patient,
     Procedure,
     Provider,
@@ -146,3 +149,17 @@ async def get_appointment(
     return await session.scalar(
         select(Appointment).where(Appointment.idempotency_key == idempotency_key)
     )
+
+
+# ---------------------------------------------------------------------------
+# Conversations
+# ---------------------------------------------------------------------------
+async def get_transcript(session: AsyncSession, thread_id: uuid.UUID) -> list[Message] | None:
+    """Every message of one conversation, oldest first; None if there is none."""
+    conversation_id = await session.scalar(
+        select(Conversation.id).where(Conversation.thread_id == thread_id)
+    )
+    if conversation_id is None:
+        return None
+    stmt = select(Message).where(Message.conversation_id == conversation_id).order_by(Message.id)
+    return list((await session.scalars(stmt)).all())

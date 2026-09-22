@@ -4,7 +4,9 @@ The distinction this module encodes is the first appearance of the project's
 central claim about where correctness lives:
 
     Postgres is the system of record -- losing it means we cannot be correct,
-    so it is CRITICAL and its loss makes the service `unhealthy` (503).
+    so it is CRITICAL and its loss makes the service `unhealthy` (503). The
+    same holds for the checkpointer's own pool into it: without it every
+    conversation forgets itself.
 
     Redis is the coordination layer -- slot holds, circuit breaker state,
     idempotency reservations, the async queue. Losing it degrades throughput
@@ -27,7 +29,7 @@ from typing import Literal
 from pydantic import BaseModel
 
 # Dependencies whose loss breaks correctness. Everything else is degradable.
-CRITICAL_DEPENDENCIES: frozenset[str] = frozenset({"postgres"})
+CRITICAL_DEPENDENCIES: frozenset[str] = frozenset({"postgres", "checkpointer"})
 
 HealthStatus = Literal["ok", "degraded", "unhealthy"]
 

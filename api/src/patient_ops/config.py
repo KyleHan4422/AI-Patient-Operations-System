@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Literal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from pydantic import Field, field_validator, model_validator
+from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from patient_ops.faults import FaultSpec, parse_fault_specs
@@ -67,8 +67,22 @@ class Settings(BaseSettings):
     # e.g. "book_appointment:timeout@1". Parsed at boot; refused in prod.
     fault_inject: str = ""
 
-    # --- LLM: unused until Phase 2 ----------------------------------------
-    openai_api_key: str = ""
+    # --- LLM ----------------------------------------------------------------
+    # "fake" is a deterministic, offline model for tests, CI and key-less
+    # demos; it is refused in prod, like FAULT_INJECT.
+    llm_provider: Literal["openai", "fake"] = "openai"
+    llm_model: str = "gpt-4.1-mini"
+    # SecretStr: repr() prints '**********', so logging Settings cannot leak it.
+    openai_api_key: SecretStr = SecretStr("")
+    llm_timeout_s: float = Field(default=30.0, gt=0, le=120)
+    # Transport-level retries with backoff, inside the SDK. The graph never
+    # sees them -- semantic retries are graph edges, not this.
+    llm_max_retries: int = Field(default=2, ge=0, le=5)
+
+    # --- Chat ---------------------------------------------------------------
+    # How many past messages the model is shown per turn. The checkpoint keeps
+    # the whole conversation; this only bounds what each LLM call costs.
+    chat_history_max_messages: int = Field(default=20, ge=2, le=200)
 
     @field_validator("log_level")
     @classmethod
@@ -104,6 +118,20 @@ class Settings(BaseSettings):
             raise ValueError("FAULT_INJECT is refused when APP_ENV=prod")
         return self
 
+    @model_validator(mode="after")
+    def _real_llm_in_prod(self) -> Settings:
+        # In dev a missing key still boots -- the chat endpoint answers 503
+        # and says why. In prod it is a startup error.
+        if self.app_env == "prod" and self.llm_provider == "fake":
+            raise ValueError("LLM_PROVIDER=fake is refused when APP_ENV=prod")
+        if self.app_env == "prod" and not self.llm_configured:
+            raise ValueError("OPENAI_API_KEY is required when APP_ENV=prod")
+        return self
+
+    @property
+    def llm_configured(self) -> bool:
+        return self.llm_provider == "fake" or bool(self.openai_api_key.get_secret_value())
+
     @property
     def clinic_tz(self) -> ZoneInfo:
         return ZoneInfo(self.clinic_timezone)
@@ -124,6 +152,18 @@ class Settings(BaseSettings):
         scheme, sep, rest = self.database_url.partition("://")
         if sep and scheme in ("postgresql", "postgres"):
             return f"postgresql+psycopg://{rest}"
+        return self.database_url
+
+    @property
+    def libpq_url(self) -> str:
+        """DATABASE_URL as plain libpq (postgresql://...), whatever form it was given in.
+
+        psycopg's own pool -- the checkpointer's -- rejects a SQLAlchemy
+        driver suffix such as postgresql+psycopg://.
+        """
+        scheme, sep, rest = self.database_url.partition("://")
+        if sep and scheme.split("+", 1)[0] in ("postgresql", "postgres"):
+            return f"postgresql://{rest}"
         return self.database_url
 
     @property

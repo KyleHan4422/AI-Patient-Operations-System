@@ -13,9 +13,9 @@ dependencies = [
     "pydantic-settings>=2.6",
     # Postgres driver. psycopg3 (not asyncpg) because LangGraph's
     # AsyncPostgresSaver is built on psycopg3 -- one driver for the ORM, the
-    # migrations and (from Phase 2) the checkpointer. Not one pool: the
-    # checkpointer requires autocommit connections, so it gets its own.
-    "psycopg[binary]>=3.2",
+    # migrations and the checkpointer. Two pools, though: the checkpointer
+    # needs autocommit connections, so [pool] gives it its own.
+    "psycopg[binary,pool]>=3.2",
     # ORM + migrations. SQLAlchemy drives psycopg3 in both modes: async for
     # the app, sync for Alembic -- same URL, same driver.
     "sqlalchemy[asyncio]>=2.0.36",
@@ -25,6 +25,11 @@ dependencies = [
     "arq>=0.26",
     # Structured logging
     "structlog>=24.4",
+    # Conversation graph + its Postgres checkpointer (state survives restarts)
+    "langgraph>=1.2",
+    "langgraph-checkpoint-postgres>=3.1",
+    # LLM provider, reached only through adapters/llm/
+    "langchain-openai>=1.6",
 ]
 
 [project.optional-dependencies]

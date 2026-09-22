@@ -1,4 +1,7 @@
-"""The system of record: seven tables that own every correctness guarantee.
+"""The system of record.
+
+Seven domain tables own every correctness guarantee; two conversation tables
+record what was said, for people to read.
 
 The two constraints that matter most are on `Appointment`:
 
@@ -25,8 +28,10 @@ Conventions:
 
 from __future__ import annotations
 
+import uuid
 from datetime import date, datetime, time
 from decimal import Decimal
+from typing import Any
 
 from sqlalchemy import (
     BigInteger,
@@ -43,10 +48,11 @@ from sqlalchemy import (
     Text,
     Time,
     UniqueConstraint,
+    Uuid,
     func,
     text,
 )
-from sqlalchemy.dialects.postgresql import ExcludeConstraint
+from sqlalchemy.dialects.postgresql import JSONB, ExcludeConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 NAMING_CONVENTION = {
@@ -60,6 +66,16 @@ NAMING_CONVENTION = {
 SPECIALTIES = ("general", "hygienist", "orthodontist")
 APPOINTMENT_STATUSES = ("booked", "cancelled", "completed")
 BOOKING_SOURCES = ("web", "voice", "staff")
+CHANNELS = ("web", "voice")
+MESSAGE_ROLES = ("user", "assistant")
+
+# Tables LangGraph's checkpointer creates and versions itself (its setup() runs
+# from `make migrate`). They share this database but not this metadata, so
+# Alembic ignores exactly these names -- an explicit list, not "anything
+# unknown", which would also hide a table a migration forgot to drop.
+LANGGRAPH_TABLES: frozenset[str] = frozenset(
+    {"checkpoints", "checkpoint_blobs", "checkpoint_writes", "checkpoint_migrations"}
+)
 
 
 def _one_of(column: str, values: tuple[str, ...]) -> str:
@@ -212,3 +228,43 @@ _appt.append_constraint(
         where=text("status = 'booked'"),
     )
 )
+
+
+# ---------------------------------------------------------------------------
+# Conversations -- the transcript, for people
+# ---------------------------------------------------------------------------
+# The LangGraph checkpoint also holds the conversation, as serialised graph
+# state: that copy is the model's memory. These rows are the copy people read
+# -- the chat history after a page reload, the /ops view, the eval runner.
+class Conversation(Base):
+    __tablename__ = "conversations"
+    __table_args__ = (CheckConstraint(_one_of("channel", CHANNELS), name="channel"),)
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
+    # Also the checkpoint key: the same id finds the model's memory and the
+    # human-readable transcript. Minted by the server, never by a client.
+    thread_id: Mapped[uuid.UUID] = mapped_column(Uuid, unique=True)
+    channel: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = _created_at()
+    last_message_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class Message(Base):
+    __tablename__ = "messages"
+    __table_args__ = (
+        CheckConstraint(_one_of("role", MESSAGE_ROLES), name="role"),
+        # Every read is "this conversation's messages, in order".
+        Index("ix_messages_conversation_id_id", "conversation_id", "id"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
+    conversation_id: Mapped[int] = mapped_column(ForeignKey("conversations.id", ondelete="CASCADE"))
+    role: Mapped[str] = mapped_column(Text)
+    content: Mapped[str] = mapped_column(Text)
+    # Per-turn diagnostics (request id; later model and token usage). Their
+    # shape changes as the system grows -- one of the few places where
+    # schemaless is the right call.
+    meta: Mapped[dict[str, Any]] = mapped_column(JSONB, server_default=text("'{}'::jsonb"))
+    created_at: Mapped[datetime] = _created_at()

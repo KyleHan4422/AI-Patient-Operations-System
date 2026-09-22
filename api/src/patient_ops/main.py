@@ -14,12 +14,19 @@ import redis.asyncio as aioredis
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from langchain_core.language_models import BaseChatModel
+from psycopg_pool import AsyncConnectionPool
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from patient_ops import __version__
+from patient_ops.adapters.llm.client import build_chat_model
+from patient_ops.api.routes_chat import router as chat_router
 from patient_ops.config import Settings, get_settings
 from patient_ops.db.session import build_engine, build_session_factory
+from patient_ops.db.transcript import SqlTranscript
+from patient_ops.graph.build import build_graph
+from patient_ops.graph.checkpointer import build_checkpointer, build_checkpointer_pool
 from patient_ops.health import HealthReport, Probe, check_health
 from patient_ops.obs.logging import RequestIdMiddleware, configure_logging, get_logger
 
@@ -54,6 +61,16 @@ def make_postgres_probe(engine: AsyncEngine) -> Probe:
     return probe
 
 
+def make_checkpointer_probe(pool: AsyncConnectionPool) -> Probe:
+    # The graph's memory has its own pool (graph/checkpointer.py), so it gets
+    # its own probe: the engine's pool being fine says nothing about this one.
+    async def probe() -> None:
+        async with pool.connection() as conn:
+            await conn.execute("SELECT 1")
+
+    return probe
+
+
 def make_redis_probe(client: aioredis.Redis) -> Probe:
     async def probe() -> None:
         await client.ping()
@@ -74,26 +91,45 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # on boot reports nothing at all.
     engine = build_engine(settings)
     redis_client = build_redis(settings)
+    checkpointer_pool = build_checkpointer_pool(settings)
+    await checkpointer_pool.open(wait=False)  # connects in the background
 
     app.state.engine = engine
     app.state.session_factory = build_session_factory(engine)
     app.state.redis = redis_client
+    # Compiled once; each turn supplies its own context (graph/context.py).
+    app.state.graph = build_graph(build_checkpointer(checkpointer_pool))
+    app.state.transcript = SqlTranscript(app.state.session_factory)
+    app.state.chat_model = app.state.injected_chat_model or build_chat_model(settings)
     app.state.probes = {
         "postgres": make_postgres_probe(engine),
+        "checkpointer": make_checkpointer_probe(checkpointer_pool),
         "redis": make_redis_probe(redis_client),
     }
 
-    log.info("startup_complete", version=__version__, app_env=settings.app_env)
+    if app.state.chat_model is None:
+        log.warning("llm_not_configured", hint="set OPENAI_API_KEY, or LLM_PROVIDER=fake")
+    log.info(
+        "startup_complete",
+        version=__version__,
+        app_env=settings.app_env,
+        llm_provider=settings.llm_provider,
+    )
     try:
         yield
     finally:
+        await checkpointer_pool.close()
         await engine.dispose()
         await redis_client.aclose()
         log.info("shutdown_complete")
 
 
 # ---------------------------------------------------------------------------
-def create_app(settings: Settings | None = None) -> FastAPI:
+def create_app(
+    settings: Settings | None = None, *, chat_model: BaseChatModel | None = None
+) -> FastAPI:
+    """Build the app. `chat_model` replaces the configured model -- a seam for
+    tests, like the injectable health probes."""
     settings = settings or get_settings()
 
     app = FastAPI(
@@ -102,6 +138,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         lifespan=lifespan,
     )
     app.state.settings = settings
+    app.state.injected_chat_model = chat_model
 
     app.add_middleware(RequestIdMiddleware)
     app.add_middleware(
@@ -123,6 +160,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             log.warning("health_degraded", status=report.status, degraded=report.degraded)
         return JSONResponse(content=report.model_dump(), status_code=report.http_status)
 
+    app.include_router(chat_router)
     return app
 
 
