@@ -15,7 +15,8 @@ Scores are cosine similarity, 1.0 for identical direction. Passages below the
 model's calibrated threshold are dropped here rather than passed upward, so a
 caller cannot accidentally reason over evidence that did not qualify. The
 highest raw score is still reported, because "how close did we get" is what
-tells a KB_GAP report which document the clinic is missing.
+tells a KB_GAP report which document the clinic is missing -- reported
+alongside the passage it belongs to, which is what makes it actionable.
 """
 
 from __future__ import annotations
@@ -54,6 +55,10 @@ class Retrieval:
     best_score: float  # before the threshold was applied
     threshold: float
     model: str
+    # The closest passage whether or not it qualified. An abstention's KB_GAP
+    # record names it: "0.31 against Insurance & payment > What we accept" is
+    # what tells the clinic which document is thin, and a bare score is not.
+    nearest: RetrievedChunk | None = None
 
     @property
     def found_something(self) -> bool:
@@ -131,4 +136,5 @@ async def search_knowledge_base(
         best_score=found[0].score,
         threshold=min_score,
         model=model,
+        nearest=found[0],
     )

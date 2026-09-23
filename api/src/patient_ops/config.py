@@ -93,6 +93,12 @@ class Settings(BaseSettings):
     # calibrated one, which is what the evaluation report measured.
     rag_min_score: float | None = Field(default=None, ge=0.0, le=1.0)
 
+    # --- Agents -------------------------------------------------------------
+    # How many times the knowledge agent may call tools before the turn gives
+    # up and abstains. A cost ceiling and a loop guard in one number: three is
+    # enough for "search, search again in other words, answer".
+    agent_max_tool_rounds: int = Field(default=3, ge=1, le=6)
+
     # --- Chat ---------------------------------------------------------------
     # How many past messages the model is shown per turn. The checkpoint keeps
     # the whole conversation; this only bounds what each LLM call costs.

@@ -12,10 +12,22 @@ import {
 
 const MAX_MESSAGE_CHARS = 2000; // mirrors the API's limit
 
+// What the wait means. An answer about the clinic is checked against its
+// evidence before it is said, so nothing streams and the pause is real. Saying
+// what is happening beats a spinner, and beats showing a price that is then
+// taken back.
+const STAGE_LABELS: Record<string, string> = {
+  knowledge: "Looking that up in the clinic's records…",
+  booking: "One moment…",
+  smalltalk: "…",
+};
+
 export function Chat() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   // The reply while it streams in. Provisional: replaced by `done.text`.
   const [streaming, setStreaming] = useState<string | null>(null);
+  // Which branch the turn took, while it is still running.
+  const [stage, setStage] = useState<string | null>(null);
   const [threadId, setThreadId] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<TurnError | null>(null);
@@ -64,19 +76,23 @@ export function Chat() {
     setInput("");
     setMessages((m) => [...m, { role: "user", content: message }]);
     setStreaming("");
+    setStage(null);
 
     await streamTurn(message, threadId, {
       onMeta: (id) => {
         setThreadId(id);
         saveThreadId(id);
       },
+      onStage: (intent) => setStage(intent),
       onToken: (token) => setStreaming((s) => (s ?? "") + token),
       onDone: (final) => {
         setStreaming(null);
+        setStage(null);
         setMessages((m) => [...m, { role: "assistant", content: final }]);
       },
       onError: (turnError) => {
         setStreaming(null);
+        setStage(null);
         setError(turnError);
         // The turn did not complete: take the message back so it can be resent.
         setMessages((m) => m.slice(0, -1));
@@ -121,14 +137,21 @@ export function Chat() {
       <div className="flex-1 space-y-3 overflow-y-auto px-4 py-4" aria-live="polite">
         {messages.length === 0 && streaming === null && (
           <p className="text-sm text-zinc-500">
-            Say hello. Tell it your name, then ask for it later — even after
-            restarting the API.
+            Ask about opening hours, prices, which insurance we take, or the
+            clinic&apos;s policies. Answers say where they came from — and when the
+            records don&apos;t cover something, so does that.
           </p>
         )}
         {messages.map((message, i) => (
           <Bubble key={i} role={message.role} text={message.content} />
         ))}
-        {streaming !== null && <Bubble role="assistant" text={streaming || "…"} pending />}
+        {streaming !== null && (
+          <Bubble
+            role="assistant"
+            text={streaming || (stage ? (STAGE_LABELS[stage] ?? "…") : "…")}
+            pending
+          />
+        )}
         {error && (
           <div
             role="alert"

@@ -108,6 +108,10 @@ search: ## Search the knowledge base by eye: make search q="how do I cancel" [k=
 calibrate: ## Measure the abstention threshold: make calibrate [PROVIDER=fake]
 	$(UV) python scripts/calibrate_threshold.py $(if $(PROVIDER),--provider $(PROVIDER))
 
+eval-knowledge: ## Grade the whole answering path: make eval-knowledge [PROVIDER=fake] [LIMIT=5]
+	$(UV) python scripts/eval_knowledge.py $(if $(PROVIDER),--provider $(PROVIDER)) \
+	  $(if $(LIMIT),--limit $(LIMIT))
+
 slots: ## Show bookable slots: make slots p=CROWN [days=7] [from=2026-11-23]
 	$(UV) python scripts/show_slots.py $(or $(p),CLEANING) --days $(or $(days),7) \
 	  $(if $(from),--from $(from))

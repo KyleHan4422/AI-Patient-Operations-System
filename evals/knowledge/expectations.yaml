@@ -1,0 +1,45 @@
+# What the whole answering path should do with a question, where the question's
+# kind is not enough to say.
+#
+# The kinds in evals/retrieval/kb_questions.yaml are Phase 3's labels: they say
+# whether the *corpus* answers a question. They map to a default expectation in
+# scripts/eval_knowledge.py -- direct/paraphrase/multi_hop should be answered
+# from passages, near_miss and off_topic should be refused, structured should be
+# answered from the clinic's tables. This file holds the questions where that
+# default is wrong, and why. Writing the reason down is the point: an
+# expectation nobody can justify is a test that will be edited until it passes.
+
+accepts_aetna:
+  kind: facts
+  why: >-
+    Aetna is deliberately absent from the clinic's records. The whole phase
+    turns on the reply being "I have no record of that plan" and not "no".
+  must_say: ["on file"]
+  must_not_say: ["don't accept", "do not accept", "we don't take"]
+
+crown_price:
+  kind: facts
+  why: Prices live in procedures, never in the documents.
+  must_say: ["$"]
+
+open_saturday:
+  kind: facts
+  why: >-
+    Opening hours are the union of the provider schedules. The reply must also
+    say what it is not -- when the clinic is open is not when a slot is free.
+  must_say: ["free appointment times"]
+
+provider_availability:
+  kind: booking_deferred
+  why: >-
+    "Anything free on Thursday afternoon" is availability, which depends on the
+    treatment and on what is already booked. It belongs to the booking path
+    (Phase 6), not to a lookup, and answering it from the opening hours would
+    be a confident wrong answer.
+
+cleaning_duration:
+  kind: abstained
+  why: >-
+    The duration is on file (procedures.duration_min) and no read-only tool
+    exposes it yet. Measured as an abstention rather than quietly expected to
+    fail: it is one tool away, and Phase 6 needs that column anyway.

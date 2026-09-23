@@ -2,8 +2,12 @@
  * Client for the chat API. The wire protocol is documented in
  * api/src/patient_ops/api/routes_chat.py:
  *
- *   meta   -> token* -> done     (success)
- *   meta   -> token* -> error    (failure after the stream started)
+ *   meta -> stage -> token* -> done     (success)
+ *   meta -> stage -> token* -> error    (failure after the stream started)
+ *
+ * Most replies carry no tokens at all. An answer about the clinic is checked
+ * against the passages it cites before it is said, so it arrives whole, in
+ * `done`; `stage` is what the client shows meanwhile.
  *
  * Failures before the stream starts (bad input, no model configured) come back
  * as ordinary HTTP errors instead, and are reported through the same onError.
@@ -19,6 +23,8 @@ export type TurnError = { code: string; message: string; requestId: string };
 
 export type TurnHandlers = {
   onMeta: (threadId: string) => void;
+  /** Which branch the turn took: "knowledge", "booking" or "smalltalk". */
+  onStage: (intent: string) => void;
   onToken: (text: string) => void;
   onDone: (text: string) => void;
   onError: (error: TurnError) => void;
@@ -64,6 +70,7 @@ export async function streamTurn(
     await readSse(response, ({ event, data }) => {
       const payload = JSON.parse(data);
       if (event === "meta") handlers.onMeta(payload.thread_id);
+      else if (event === "stage") handlers.onStage(payload.intent);
       else if (event === "token") handlers.onToken(payload.text);
       else if (event === "done") {
         finished = true;

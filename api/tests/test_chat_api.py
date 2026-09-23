@@ -3,6 +3,11 @@
 The app is driven through its lifespan -- httpx's ASGITransport does not run
 it -- so these tests exercise exactly what `make dev` builds: the checkpointer
 pool, the compiled graph, the transcript writer.
+
+The conversational turns here are pinned to the small-talk branch, which needs
+no clinic data: what is being tested is the stream, the transcript and the
+durability of the thread, none of which differ by branch. Answering from the
+clinic's records has its own tests, against a corpus.
 """
 
 from __future__ import annotations
@@ -20,8 +25,9 @@ from pydantic import SecretStr
 
 from patient_ops.api.routes_chat import MAX_MESSAGE_CHARS
 from patient_ops.config import Settings
+from patient_ops.db.models import InsurancePlan
 from patient_ops.main import create_app
-from tests.fakes import TimingOutModel
+from tests.fakes import PinnedIntent, TimingOutModel
 
 
 @dataclass(frozen=True)
@@ -79,19 +85,20 @@ def chat_settings(test_settings: Settings, engine) -> Settings:
 # ---------------------------------------------------------------------------
 # The stream
 # ---------------------------------------------------------------------------
-async def test_a_turn_streams_meta_then_tokens_then_done(chat_settings):
-    async with running_app(chat_settings) as client:
+async def test_a_turn_streams_meta_then_stage_then_tokens_then_done(chat_settings):
+    async with running_app(chat_settings, PinnedIntent()) as client:
         events = await say(client, "hello there")
 
     names = [e.name for e in events]
-    assert names[0] == "meta" and names[-1] == "done"
-    assert set(names[1:-1]) == {"token"} and len(names) > 3
-    assert "".join(e.data["text"] for e in events[1:-1]) == done_text(events)
+    assert names[0] == "meta" and names[1] == "stage" and names[-1] == "done"
+    assert events[1].data["intent"] == "smalltalk", "the client is told which branch this is"
+    assert set(names[2:-1]) == {"token"} and len(names) > 4
+    assert "".join(e.data["text"] for e in events[2:-1]) == done_text(events)
     assert events[0].data["request_id"], "every stream carries its request id"
 
 
 async def test_first_turn_mints_a_thread_id_that_later_turns_reuse(chat_settings):
-    async with running_app(chat_settings) as client:
+    async with running_app(chat_settings, PinnedIntent()) as client:
         first = await say(client, "My name is Kyle")
         thread_id = first[0].data["thread_id"]
         uuid.UUID(thread_id)  # a real UUID, minted by the server
@@ -129,6 +136,26 @@ async def test_no_model_configured_is_a_real_503(chat_settings):
     assert "LLM_PROVIDER=fake" in response.json()["detail"]["message"]
 
 
+async def test_an_uncalibrated_embedding_model_is_a_real_503(chat_settings):
+    """The threshold is resolved before the stream opens, so this is a status code.
+
+    Found at the last safe moment: the process still boots (Phase 0's rule) and
+    /health still answers, but a turn that would have to invent a threshold is
+    refused with the reason, not answered from an arbitrary one.
+    """
+    settings = chat_settings.model_copy(
+        update={
+            "llm_provider": "openai",
+            "openai_api_key": SecretStr("sk-not-used-offline"),
+            "embedding_model": "an-uncalibrated-model",
+        }
+    )
+    async with running_app(settings) as client:
+        response = await client.post("/api/chat/turn", json={"message": "how do I cancel?"})
+    assert response.status_code == 503
+    assert "calibrated" in response.json()["detail"]["message"]
+
+
 async def test_a_model_failure_mid_stream_is_an_error_event(chat_settings):
     async with running_app(chat_settings, chat_model=TimingOutModel()) as client:
         events = await say(client, "hello")
@@ -142,6 +169,26 @@ async def test_a_model_failure_mid_stream_is_an_error_event(chat_settings):
     assert history.status_code == 404, "a failed turn is not recorded"
 
 
+async def test_a_question_about_the_clinic_is_answered_without_streaming(
+    chat_settings, session_factory
+):
+    """The knowledge branch over real HTTP: no tokens, one whole answer.
+
+    Nothing is said until it has been checked against the clinic's records, so
+    `stage` is all a client gets meanwhile -- which is the whole reason that
+    event exists.
+    """
+    async with session_factory() as session, session.begin():
+        session.add(InsurancePlan(plan_name="Delta Dental PPO", accepted=True, in_network=True))
+
+    async with running_app(chat_settings) as client:
+        events = await say(client, "Do you take Delta Dental PPO?")
+
+    assert [e.name for e in events] == ["meta", "stage", "done"], "an answer never streams"
+    assert events[1].data["intent"] == "knowledge"
+    assert "in network" in done_text(events)
+
+
 # ---------------------------------------------------------------------------
 # The transcript
 # ---------------------------------------------------------------------------
@@ -152,7 +199,7 @@ async def test_history_of_an_unknown_thread_is_404(chat_settings):
 
 
 async def test_history_lists_every_message_in_order(chat_settings):
-    async with running_app(chat_settings) as client:
+    async with running_app(chat_settings, PinnedIntent()) as client:
         first = await say(client, "one")
         thread_id = first[0].data["thread_id"]
         second = await say(client, "two", thread_id)
@@ -176,14 +223,14 @@ async def test_a_restarted_app_remembers_the_conversation(chat_settings):
     state, new connection pools, new compiled graph. If turn four still sees
     turn one, the memory can only have come from Postgres.
     """
-    async with running_app(chat_settings) as client:
+    async with running_app(chat_settings, PinnedIntent()) as client:
         first = await say(client, "My name is Kyle")
         thread_id = first[0].data["thread_id"]
         await say(client, "I have a toothache", thread_id)
         await say(client, "I prefer mornings", thread_id)
     # -- the first app is fully shut down here: lifespan exited, pools closed --
 
-    async with running_app(chat_settings) as client:
+    async with running_app(chat_settings, PinnedIntent()) as client:
         fourth = await say(client, "What did I say first?", thread_id)
         history = (await client.get(f"/api/chat/threads/{thread_id}/messages")).json()
 

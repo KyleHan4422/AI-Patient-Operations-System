@@ -48,6 +48,21 @@ async def list_procedures(session: AsyncSession) -> list[Procedure]:
     return list((await session.scalars(select(Procedure).order_by(Procedure.code))).all())
 
 
+async def find_procedure(session: AsyncSession, term: str) -> Procedure | None:
+    """A treatment by its code ("CROWN") or by its exact name ("Crown").
+
+    Exact on both, ignoring case and spacing, for the same reason as
+    find_insurance_plan: fuzzy matching is what turns "crown" into "crown
+    lengthening" and quotes the wrong price. The agent is given the list of
+    codes in its prompt, so it has no need to guess at one.
+    """
+    normalized = _normalize_name(term)
+    stmt = select(Procedure).where(
+        (func.lower(Procedure.code) == normalized) | (func.lower(Procedure.name) == normalized)
+    )
+    return await session.scalar(stmt.order_by(Procedure.code).limit(1))
+
+
 async def find_insurance_plan(session: AsyncSession, plan_name: str) -> InsurancePlan | None:
     """Look up a plan by exact name, ignoring case and spacing.
 
@@ -110,6 +125,31 @@ async def schedules_for(
         ScheduleWindow(r.provider_id, r.weekday, r.start_time, r.end_time)
         for r in (await session.scalars(stmt)).all()
     ]
+
+
+async def all_schedules(session: AsyncSession) -> list[ScheduleWindow]:
+    """Every provider's working windows -- the clinic's opening hours are their union."""
+    stmt = select(ProviderSchedule).order_by(ProviderSchedule.weekday, ProviderSchedule.start_time)
+    return [
+        ScheduleWindow(r.provider_id, r.weekday, r.start_time, r.end_time)
+        for r in (await session.scalars(stmt)).all()
+    ]
+
+
+async def closures_with_reasons(
+    session: AsyncSession, first: date, last: date
+) -> list[ClinicClosure]:
+    """Closures in a window, with why -- closures_between returns only the dates.
+
+    Slot computation needs a set of dates and nothing else; telling a patient
+    the clinic is shut needs the reason, or the answer sounds evasive.
+    """
+    stmt = (
+        select(ClinicClosure)
+        .where(ClinicClosure.closed_on.between(first, last))
+        .order_by(ClinicClosure.closed_on)
+    )
+    return list((await session.scalars(stmt)).all())
 
 
 async def closures_between(session: AsyncSession, first: date, last: date) -> set[date]:

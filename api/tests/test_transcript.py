@@ -10,8 +10,13 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 
 from patient_ops.db import repo
-from patient_ops.db.models import Conversation
-from patient_ops.db.transcript import SqlTranscript, TurnRecord
+from patient_ops.db.models import Conversation, KbGap, ToolCall
+from patient_ops.db.transcript import (
+    KbGapRecord,
+    SqlTranscript,
+    ToolCallRecord,
+    TurnRecord,
+)
 
 
 def turn(thread_id: uuid.UUID, n: int, channel: str = "web") -> TurnRecord:
@@ -78,3 +83,94 @@ async def test_unknown_thread_is_none_not_empty(session_factory):
 async def test_unknown_channel_is_rejected_by_the_database(session_factory):
     with pytest.raises(IntegrityError, match="ck_conversations_channel"):
         await SqlTranscript(session_factory).record_turn(turn(uuid.uuid4(), 1, channel="sms"))
+
+
+# ---------------------------------------------------------------------------
+# What a turn records besides what was said (Phase 4)
+# ---------------------------------------------------------------------------
+async def test_a_slow_lookup_is_recorded_rather_than_overflowing(session_factory):
+    """A search embeds its query through the provider: 30s of timeout plus the
+    SDK's retries is past what a SMALLINT holds. Overflowing would fail the
+    insert of a turn that had already been answered."""
+    transcript = SqlTranscript(session_factory)
+    thread = uuid.uuid4()
+    slow = ToolCallRecord(
+        name="search_documents",
+        args={"query": "anything"},
+        summary="4 passage(s)",
+        latency_ms=95_000,
+    )
+    await transcript.record_turn(
+        TurnRecord(
+            thread_id=thread,
+            channel="web",
+            user_text="q",
+            assistant_text="a",
+            tool_calls=(slow,),
+        )
+    )
+    async with session_factory() as session:
+        [recorded] = (await session.scalars(select(ToolCall))).all()
+    assert recorded.latency_ms == 95_000
+
+
+async def test_a_turn_writes_its_lookups_and_its_gap_together(session_factory):
+    """One transaction: a reply whose evidence went missing is not a record of
+    anything."""
+    transcript = SqlTranscript(session_factory)
+    thread = uuid.uuid4()
+    await transcript.record_turn(
+        TurnRecord(
+            thread_id=thread,
+            channel="web",
+            user_text="do you do braces?",
+            assistant_text="I don't have that on file.",
+            tool_calls=(
+                ToolCallRecord(
+                    name="search_documents", args={"query": "braces"}, summary="0", latency_ms=12
+                ),
+            ),
+            kb_gap=KbGapRecord(
+                question="do you do braces?",
+                reason="no_passage_above_threshold",
+                best_score=0.12,
+                threshold=0.345,
+                embedding_model="text-embedding-3-small",
+                nearest_heading="Procedures Explained > Fillings",
+                nearest_source="procedures-explained.md",
+            ),
+        )
+    )
+
+    async with session_factory() as session:
+        messages = await repo.get_transcript(session, thread)
+        [call] = (await session.scalars(select(ToolCall))).all()
+        [gap] = (await session.scalars(select(KbGap))).all()
+
+    assistant = messages[-1]
+    assert call.message_id == assistant.id, "the lookups hang off the reply they produced"
+    assert gap.message_id == assistant.id
+    assert gap.reason == "no_passage_above_threshold"
+
+
+async def test_an_unknown_gap_reason_is_rejected_by_the_database(session_factory):
+    """The CHECK is the backstop for graph/grounding.GAP_REASONS drifting."""
+    transcript = SqlTranscript(session_factory)
+    with pytest.raises(IntegrityError):
+        await transcript.record_turn(
+            TurnRecord(
+                thread_id=uuid.uuid4(),
+                channel="web",
+                user_text="q",
+                assistant_text="a",
+                kb_gap=KbGapRecord(
+                    question="q",
+                    reason="because-i-said-so",
+                    best_score=None,
+                    threshold=None,
+                    embedding_model="m",
+                    nearest_heading=None,
+                    nearest_source=None,
+                ),
+            )
+        )

@@ -1,7 +1,8 @@
 """The system of record.
 
 Seven domain tables own every correctness guarantee; two conversation tables
-record what was said, for people to read; two knowledge-base tables hold the
+record what was said, for people to read; two more record what the assistant
+looked up and what it could not answer; two knowledge-base tables hold the
 clinic's prose and its embeddings.
 
 The two constraints that matter most are on `Appointment`:
@@ -41,9 +42,11 @@ from sqlalchemy import (
     CheckConstraint,
     Date,
     DateTime,
+    Float,
     ForeignKey,
     Identity,
     Index,
+    Integer,
     MetaData,
     Numeric,
     SmallInteger,
@@ -71,6 +74,17 @@ APPOINTMENT_STATUSES = ("booked", "cancelled", "completed")
 BOOKING_SOURCES = ("web", "voice", "staff")
 CHANNELS = ("web", "voice")
 MESSAGE_ROLES = ("user", "assistant")
+# Why a turn ended in "I don't have that on file". graph/grounding.py decides
+# which one applies and holds the same tuple; a test asserts they agree, so a
+# reason cannot be invented on one side and be unwritable on the other.
+KB_GAP_REASONS = (
+    "no_passage_above_threshold",
+    "passages_did_not_answer",
+    "answer_without_citation",
+    "fabricated_citation",
+    "unsupported_figure",
+    "no_answer",
+)
 
 # Dimensions of one embedding vector -- text-embedding-3-small's native size.
 # Part of the schema, not configuration: a model of a different size needs a
@@ -277,6 +291,64 @@ class Message(Base):
     # shape changes as the system grows -- one of the few places where
     # schemaless is the right call.
     meta: Mapped[dict[str, Any]] = mapped_column(JSONB, server_default=text("'{}'::jsonb"))
+    created_at: Mapped[datetime] = _created_at()
+
+
+# ---------------------------------------------------------------------------
+# What the assistant did, and what it could not answer
+# ---------------------------------------------------------------------------
+class ToolCall(Base):
+    """One read-only lookup an agent made, as part of one turn.
+
+    Written by the same transaction as the turn it belongs to, so a reply and
+    the evidence behind it are never half saved. Only completed calls get a
+    row: a tool that fails ends the turn, and nothing is written at all. When
+    Phase 8 makes a failed call survivable, failure gets its columns.
+    """
+
+    __tablename__ = "tool_calls"
+    __table_args__ = (Index("ix_tool_calls_message_id", "message_id"),)
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
+    # The assistant message this call was made for. CASCADE, because a tool
+    # call outliving the reply it produced is not evidence of anything.
+    message_id: Mapped[int] = mapped_column(ForeignKey("messages.id", ondelete="CASCADE"))
+    name: Mapped[str] = mapped_column(Text)
+    # What the model passed. Schemaless on purpose: every tool has different
+    # arguments, and this is a trace, not a queryable dimension.
+    args: Mapped[dict[str, Any]] = mapped_column(JSONB, server_default=text("'{}'::jsonb"))
+    summary: Mapped[str] = mapped_column(Text)  # one line: what came back
+    # Integer, not SmallInteger: a search embeds the query through the
+    # provider, and 30s of timeout plus the SDK's retries is past 32767ms.
+    # Overflowing here would fail the insert of a turn that had already been
+    # answered -- an error event, with nothing kept.
+    latency_ms: Mapped[int] = mapped_column(Integer)
+    created_at: Mapped[datetime] = _created_at()
+
+
+class KbGap(Base):
+    """A question the clinic's records could not answer.
+
+    The byproduct that pays for the abstention. Each row names a document the
+    clinic should write, with how close retrieval got to it -- which is the
+    difference between "we are missing a page on X" and "our page on X is
+    worded nothing like the way patients ask".
+    """
+
+    __tablename__ = "kb_gaps"
+    __table_args__ = (CheckConstraint(_one_of("reason", KB_GAP_REASONS), name="reason"),)
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
+    message_id: Mapped[int] = mapped_column(ForeignKey("messages.id", ondelete="CASCADE"))
+    question: Mapped[str] = mapped_column(Text)
+    reason: Mapped[str] = mapped_column(Text)
+    # NULL when the turn never got as far as searching the documents.
+    best_score: Mapped[float | None] = mapped_column(Float)
+    threshold: Mapped[float | None] = mapped_column(Float)
+    # Scores only mean something next to the model that produced them.
+    embedding_model: Mapped[str] = mapped_column(Text)
+    nearest_heading: Mapped[str | None] = mapped_column(Text)
+    nearest_source: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = _created_at()
 
 

@@ -8,14 +8,18 @@ only does GET, so the web client reads the stream with fetch). Every stream is
 exactly:
 
     event: meta    {"thread_id", "request_id"}        first, always
+    event: stage   {"intent"}                         once, when the branch is known
     event: token   {"text"}                           zero or more; provisional
     event: done    {"text", "thread_id"}              success; `text` is authoritative
       -- or --
     event: error   {"code", "message", "request_id"}  failure; `code` is an ErrorCode
 
 `done.text` is the reply of record. Clients show tokens as they arrive, then
-replace them with it: some replies (a booking confirmation, from Phase 6) are
-filled from a template and never stream at all.
+replace them with it. Most replies never stream a token at all: an answer about
+the clinic is checked against its evidence before it is said, and a booking
+confirmation (Phase 6) is filled from the row the database holds. `stage` is
+what a client shows meanwhile -- it says which branch the turn took, from the
+classifier's own output rather than from a guess.
 
 Errors found before the stream starts get a real status code (422 bad input,
 503 no model configured). Once the 200 has been sent it cannot be taken back,
@@ -42,11 +46,13 @@ from langchain_core.language_models import BaseChatModel
 from pydantic import BaseModel, StringConstraints
 
 from patient_ops.adapters.llm.client import classify_llm_error
+from patient_ops.adapters.llm.embeddings import embedding_model_name, min_score_for
 from patient_ops.db import repo
-from patient_ops.errors import ErrorCode
+from patient_ops.errors import ErrorCode, ToolError
 from patient_ops.graph.context import GraphContext
-from patient_ops.graph.turn import Token, run_turn
+from patient_ops.graph.turn import Stage, Token, run_turn
 from patient_ops.obs.logging import get_logger
+from patient_ops.tools.registry import ReadOnlyToolset
 
 log = get_logger(__name__)
 
@@ -72,11 +78,18 @@ class TranscriptEntry(BaseModel):
 
 
 # What the user sees. The code, the request id and the exception go to the log.
+# Read through user_message(), which falls back rather than raising: a missing
+# entry must not turn a handled failure into an unhandled one.
 USER_MESSAGES: dict[ErrorCode, str] = {
     ErrorCode.TRANSIENT: "Sorry, I couldn't answer just now. Please try again in a moment.",
     ErrorCode.PERMANENT: "Sorry, I can't answer right now. Please contact the clinic directly.",
     ErrorCode.UNKNOWN: "Sorry, something went wrong on our side. Please try again.",
 }
+
+
+def user_message(code: ErrorCode) -> str:
+    return USER_MESSAGES.get(code, USER_MESSAGES[ErrorCode.UNKNOWN])
+
 
 _DATABASE_UNAVAILABLE = (
     psycopg.OperationalError,  # includes psycopg_pool.PoolTimeout
@@ -86,6 +99,11 @@ _DATABASE_UNAVAILABLE = (
 
 
 def classify_turn_error(exc: BaseException) -> ErrorCode:
+    # A ToolError has already been classified by the layer that raised it --
+    # "the corpus was never ingested" is permanent, and re-deriving that here
+    # from the exception type would lose it.
+    if isinstance(exc, ToolError):
+        return exc.code
     code = classify_llm_error(exc)
     if code is not None:
         return code
@@ -109,11 +127,47 @@ def require_chat_model(request: Request) -> BaseChatModel:
     return model
 
 
+def require_toolset(request: Request) -> ReadOnlyToolset:
+    """The turn's read-only tools, built fresh: it records what this turn used.
+
+    Resolved before the stream opens, like the model, so an embedder that is
+    not configured and a model with no calibrated threshold are both a 503 with
+    a reason -- not an error event three seconds into an answer.
+    """
+    state = request.app.state
+    settings = state.settings
+    if state.embeddings is None:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": ErrorCode.PERMANENT,
+                "message": "No embedding model is configured, so the clinic's documents "
+                "cannot be searched. Set OPENAI_API_KEY, or LLM_PROVIDER=fake.",
+            },
+        )
+    model = embedding_model_name(settings)
+    try:
+        min_score = min_score_for(model, settings.rag_min_score)
+    except ToolError as exc:
+        raise HTTPException(
+            status_code=503, detail={"code": exc.code, "message": exc.detail}
+        ) from exc
+    return ReadOnlyToolset(
+        session_factory=state.session_factory,
+        embeddings=state.embeddings,
+        embedding_model=model,
+        min_score=min_score,
+        top_k=settings.rag_top_k,
+        tz=settings.clinic_tz,
+    )
+
+
 @router.post("/turn", response_class=EventSourceResponse)
 async def turn(
     body: TurnRequest,
     request: Request,
     chat_model: Annotated[BaseChatModel, Depends(require_chat_model)],
+    toolset: Annotated[ReadOnlyToolset, Depends(require_toolset)],
 ) -> AsyncIterator[ServerSentEvent]:
     state = request.app.state
     thread_id = body.thread_id or uuid.uuid4()
@@ -132,11 +186,15 @@ async def turn(
         recorder=state.transcript,
         channel=body.channel,
         history_limit=state.settings.chat_history_max_messages,
+        toolset=toolset,
+        max_tool_rounds=state.settings.agent_max_tool_rounds,
     )
     started = time.perf_counter()
     try:
         async for event in run_turn(state.graph, text=body.message, context=context):
-            if isinstance(event, Token):
+            if isinstance(event, Stage):
+                yield ServerSentEvent(event="stage", data={"intent": event.intent})
+            elif isinstance(event, Token):
                 yield ServerSentEvent(event="token", data={"text": event.text})
             else:
                 log.info("turn_complete", latency_ms=round((time.perf_counter() - started) * 1000))
@@ -150,7 +208,7 @@ async def turn(
         log.error("turn_failed", code=code, error_type=type(exc).__name__, exc_info=True)
         yield ServerSentEvent(
             event="error",
-            data={"code": code, "message": USER_MESSAGES[code], "request_id": request_id},
+            data={"code": code, "message": user_message(code), "request_id": request_id},
         )
 
 

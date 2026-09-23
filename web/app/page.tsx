@@ -13,7 +13,8 @@ export default function Home() {
         <div className="flex flex-col gap-1">
           <h1 className="text-xl font-semibold tracking-tight">Patient Operations System</h1>
           <p className="text-sm text-zinc-400">
-            Phase 2 — conversation memory only. No clinic data yet.
+            Phase 4 — answers from the clinic&apos;s records and documents. It
+            can&apos;t book appointments yet.
           </p>
         </div>
         <HealthIndicator report={report} unreachable={unreachable} />

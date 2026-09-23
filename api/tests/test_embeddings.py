@@ -112,7 +112,7 @@ def test_related_text_scores_above_unrelated_text():
 
 
 def test_word_forms_are_brought_together():
-    """"Where do I park" has to find a section titled "Parking"."""
+    """ "Where do I park" has to find a section titled "Parking"."""
     assert similarity("where do I park my car", "Parking is available in the garage") > 0.3
     assert similarity("booking an appointment", "appointments are booked by phone") > 0.3
 

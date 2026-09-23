@@ -21,6 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 
 from patient_ops import __version__
 from patient_ops.adapters.llm.client import build_chat_model
+from patient_ops.adapters.llm.embeddings import build_embeddings
 from patient_ops.api.routes_chat import router as chat_router
 from patient_ops.config import Settings, get_settings
 from patient_ops.db.session import build_engine, build_session_factory
@@ -101,6 +102,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.graph = build_graph(build_checkpointer(checkpointer_pool))
     app.state.transcript = SqlTranscript(app.state.session_factory)
     app.state.chat_model = app.state.injected_chat_model or build_chat_model(settings)
+    # Built once and shared: an OpenAIEmbeddings holds an HTTP client. The
+    # per-turn object is the toolset around it (api/routes_chat.py), because
+    # that one accumulates a single turn's evidence.
+    app.state.embeddings = build_embeddings(settings)
     app.state.probes = {
         "postgres": make_postgres_probe(engine),
         "checkpointer": make_checkpointer_probe(checkpointer_pool),
