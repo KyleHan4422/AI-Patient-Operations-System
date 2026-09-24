@@ -45,6 +45,8 @@ class Final:
     """The authoritative reply. Emitted only after the turn is saved."""
 
     text: str
+    # Fallbacks the turn took. Not an error: the reply is still the reply.
+    degraded: tuple[str, ...] = ()
 
 
 def turn_input(text: str) -> dict[str, Any]:
@@ -60,6 +62,7 @@ def turn_input(text: str) -> dict[str, Any]:
         "answer_kind": None,
         "citations": None,
         "kb_gap": None,
+        "degraded_modes": None,
     }
 
 
@@ -71,6 +74,7 @@ async def run_turn(
     graph: CompiledStateGraph, *, text: str, context: GraphContext
 ) -> AsyncIterator[Stage | Token | Final]:
     final: str | None = None
+    degraded: list[str] = []
     async for mode, chunk in graph.astream(
         turn_input(text),
         turn_config(context.thread_id),
@@ -89,9 +93,10 @@ async def run_turn(
                 yield Stage(chunk["classify_intent"]["intent"])
             if "respond" in chunk:
                 final = chunk["respond"]["final_response"]
+                degraded = chunk["respond"].get("degraded_modes") or []
 
     if final is None:  # every path ends in respond; reaching here is a graph bug
         raise RuntimeError("turn finished without passing through respond")
     # After the loop, not when respond's update arrives: an acknowledgement
     # sent before the save would be a promise the system might not keep.
-    yield Final(final)
+    yield Final(final, tuple(degraded))

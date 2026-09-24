@@ -152,8 +152,8 @@ chat: ## Send one chat turn, print the raw SSE stream: make chat m="hello" [t=<t
 test: ## Run the whole Python test suite (needs `make up`)
 	$(UV) pytest
 
-test-unit: ## Run only the tests that need no database (works with containers stopped)
-	$(UV) pytest -m "not db"
+test-unit: ## Run only the tests that need no database or Redis (works with containers stopped)
+	$(UV) pytest -m "not db and not redis"
 
 lint: ## Lint Python and TypeScript
 	$(UV) ruff check src tests scripts alembic

@@ -10,7 +10,7 @@ exactly:
     event: meta    {"thread_id", "request_id"}        first, always
     event: stage   {"intent"}                         once, when the branch is known
     event: token   {"text"}                           zero or more; provisional
-    event: done    {"text", "thread_id"}              success; `text` is authoritative
+    event: done    {"text", "thread_id", "degraded"}  success; `text` is authoritative
       -- or --
     event: error   {"code", "message", "request_id"}  failure; `code` is an ErrorCode
 
@@ -21,8 +21,13 @@ confirmation (Phase 6) is filled from the row the database holds. `stage` is
 what a client shows meanwhile -- it says which branch the turn took, from the
 classifier's own output rather than from a guess.
 
+`done.degraded` lists the fallbacks the turn took because an optional
+dependency was down (e.g. ["rate_limit"] when Redis is unreachable). Usually
+empty. The reply is still the reply; this is so a degraded system is never a
+silent one.
+
 Errors found before the stream starts get a real status code (422 bad input,
-503 no model configured). Once the 200 has been sent it cannot be taken back,
+429 too many turns, 503 no model configured). Once the 200 has been sent it cannot be taken back,
 so a failure mid-turn is an `error` event.
 
 This module translates and nothing more; what a turn *is* lives in graph/turn.py,
@@ -48,6 +53,7 @@ from pydantic import BaseModel, StringConstraints
 from patient_ops.adapters.llm.client import classify_llm_error
 from patient_ops.adapters.llm.embeddings import embedding_model_name, min_score_for
 from patient_ops.db import repo
+from patient_ops.degradation import DegradedModes
 from patient_ops.errors import ErrorCode, ToolError
 from patient_ops.graph.context import GraphContext
 from patient_ops.graph.turn import Stage, Token, run_turn
@@ -127,6 +133,41 @@ def require_chat_model(request: Request) -> BaseChatModel:
     return model
 
 
+def turn_degradation() -> DegradedModes:
+    """This turn's record of fallbacks. One instance per request: FastAPI
+    caches a dependency within a request, so the rate limiter and the graph
+    context below receive the same one."""
+    return DegradedModes()
+
+
+async def enforce_rate_limit(
+    request: Request, degraded: Annotated[DegradedModes, Depends(turn_degradation)]
+) -> None:
+    """R5: a token bucket per client, checked before the stream opens -- so a
+    client over its budget gets a real 429 and a Retry-After, and no model is
+    called on its behalf. Fails open: with Redis down the turn goes ahead and
+    records `rate_limit` among its degraded modes.
+    """
+    settings = request.app.state.settings
+    if not settings.rate_limit_enabled:
+        return
+    # The socket peer. Behind a reverse proxy this is the proxy, and the key
+    # must come from the X-Forwarded-For entry the proxy itself appended --
+    # never from the header as the client sent it, which anyone can forge.
+    client = request.client.host if request.client else "unknown"
+    decision = await request.app.state.rate_limiter.take("chat", client, degraded)
+    if not decision.allowed:
+        log.info("rate_limited", client=client, retry_after_s=decision.retry_after_s)
+        raise HTTPException(
+            status_code=429,
+            detail={
+                "code": ErrorCode.TRANSIENT,
+                "message": "Too many messages in a short time. Please wait a moment.",
+            },
+            headers={"Retry-After": str(decision.retry_after_s)},
+        )
+
+
 def require_toolset(request: Request) -> ReadOnlyToolset:
     """The turn's read-only tools, built fresh: it records what this turn used.
 
@@ -162,10 +203,13 @@ def require_toolset(request: Request) -> ReadOnlyToolset:
     )
 
 
-@router.post("/turn", response_class=EventSourceResponse)
+@router.post(
+    "/turn", response_class=EventSourceResponse, dependencies=[Depends(enforce_rate_limit)]
+)
 async def turn(
     body: TurnRequest,
     request: Request,
+    degraded: Annotated[DegradedModes, Depends(turn_degradation)],
     chat_model: Annotated[BaseChatModel, Depends(require_chat_model)],
     toolset: Annotated[ReadOnlyToolset, Depends(require_toolset)],
 ) -> AsyncIterator[ServerSentEvent]:
@@ -188,6 +232,7 @@ async def turn(
         history_limit=state.settings.chat_history_max_messages,
         toolset=toolset,
         max_tool_rounds=state.settings.agent_max_tool_rounds,
+        degraded=degraded,
     )
     started = time.perf_counter()
     try:
@@ -197,9 +242,18 @@ async def turn(
             elif isinstance(event, Token):
                 yield ServerSentEvent(event="token", data={"text": event.text})
             else:
-                log.info("turn_complete", latency_ms=round((time.perf_counter() - started) * 1000))
+                log.info(
+                    "turn_complete",
+                    latency_ms=round((time.perf_counter() - started) * 1000),
+                    degraded=list(event.degraded),
+                )
                 yield ServerSentEvent(
-                    event="done", data={"text": event.text, "thread_id": thread_id}
+                    event="done",
+                    data={
+                        "text": event.text,
+                        "thread_id": thread_id,
+                        "degraded": list(event.degraded),
+                    },
                 )
     except Exception as exc:
         # Not BaseException: a client disconnect cancels the turn, and that

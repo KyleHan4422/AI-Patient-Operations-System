@@ -13,12 +13,13 @@ every turn.
 from __future__ import annotations
 
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Literal, Protocol
 
 from langchain_core.language_models import BaseChatModel
 
 from patient_ops.db.transcript import TurnRecord
+from patient_ops.degradation import DegradedModes
 from patient_ops.tools.registry import ReadOnlyToolset
 
 
@@ -42,3 +43,7 @@ class GraphContext:
     # How many times the agent may call tools before the turn gives up and
     # abstains. A cost ceiling and a loop guard in one number.
     max_tool_rounds: int = 3
+    # Which fallbacks this turn took ("rate_limit", "holds", ...). Mutable and
+    # per turn, like the toolset's trace: whatever took a fallback notes it
+    # here, and `respond` carries the list out with the reply.
+    degraded: DegradedModes = field(default_factory=DegradedModes)

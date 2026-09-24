@@ -9,8 +9,8 @@ times out, the retry succeeds" is one line:
 
 This module is only the grammar and the attempt counter. It knows nothing about
 calendars or Redis: each adapter decides what a mode means for it (see
-adapters/calendar/faults.py). Later phases register more targets here -- redis
-(Phase 5), hold and agent (Phase 8).
+adapters/calendar/faults.py and redis_layer/client.py). Phase 8 registers more
+targets here -- hold and agent.
 """
 
 from __future__ import annotations
@@ -26,7 +26,12 @@ class FaultMode(StrEnum):
     TIMEOUT_AFTER_WRITE = "timeout_after_write"  # the write committed; the answer was lost
     CONFLICT = "conflict"  # someone else got the slot
     SERVER_ERROR = "server_error"  # the remote system answered HTTP 500
+    UNAVAILABLE = "unavailable"  # the dependency cannot be reached at all
 
+
+# ToolError.cause for every injected failure, whichever adapter raised it --
+# so an injected failure is never mistaken for a real one in the logs.
+INJECTED = "Injected"
 
 _READ_MODES = frozenset({FaultMode.TIMEOUT, FaultMode.SERVER_ERROR})
 
@@ -36,7 +41,10 @@ _READ_MODES = frozenset({FaultMode.TIMEOUT, FaultMode.SERVER_ERROR})
 KNOWN_TARGETS: dict[str, frozenset[FaultMode]] = {
     "check_availability": _READ_MODES,
     "get_appointment": _READ_MODES,
-    "book_appointment": frozenset(FaultMode),
+    "book_appointment": frozenset(FaultMode) - {FaultMode.UNAVAILABLE},
+    # Every Redis operation at once: the coordination layer is either there or
+    # it is not, and "not" is the case every fallback path exists for.
+    "redis": frozenset({FaultMode.UNAVAILABLE}),
 }
 
 

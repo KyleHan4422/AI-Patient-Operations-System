@@ -67,6 +67,7 @@ asyncio_mode = "auto"
 addopts = "-q"
 markers = [
     "db: needs a running Postgres (make up). Deselect with -m 'not db'.",
+    "redis: needs a running Redis (make up). Deselect with -m 'not redis'.",
 ]
 
 [tool.ruff]

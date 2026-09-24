@@ -46,3 +46,8 @@ class AgentState(TypedDict):
     # Set when the turn abstained: what the clinic could not answer, and how
     # close it got. `respond` persists it with the rest of the turn.
     kb_gap: dict[str, Any] | None
+    # The fallbacks this turn took because an optional dependency was down --
+    # "rate_limit", "holds", ... Empty when nothing degraded. Written only by
+    # `respond`, from the turn's context, so a degraded turn is visible in the
+    # state, the transcript's meta and the `done` event alike.
+    degraded_modes: list[str] | None

@@ -26,10 +26,13 @@ from patient_ops.api.routes_chat import router as chat_router
 from patient_ops.config import Settings, get_settings
 from patient_ops.db.session import build_engine, build_session_factory
 from patient_ops.db.transcript import SqlTranscript
+from patient_ops.faults import FaultInjector
 from patient_ops.graph.build import build_graph
 from patient_ops.graph.checkpointer import build_checkpointer, build_checkpointer_pool
 from patient_ops.health import HealthReport, Probe, check_health
 from patient_ops.obs.logging import RequestIdMiddleware, configure_logging, get_logger
+from patient_ops.redis_layer.client import Coordinator, build_redis_client
+from patient_ops.redis_layer.ratelimit import RateLimiter
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -41,11 +44,10 @@ log = get_logger(__name__)
 # Dependency clients
 # ---------------------------------------------------------------------------
 def build_redis(settings: Settings) -> aioredis.Redis:
-    return aioredis.from_url(
+    return build_redis_client(
         settings.redis_url,
-        socket_connect_timeout=settings.redis_connect_timeout_s,
-        socket_timeout=settings.redis_socket_timeout_s,
-        decode_responses=True,
+        connect_timeout_s=settings.redis_connect_timeout_s,
+        socket_timeout_s=settings.redis_socket_timeout_s,
     )
 
 
@@ -98,6 +100,19 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.engine = engine
     app.state.session_factory = build_session_factory(engine)
     app.state.redis = redis_client
+    # Every coordination feature reaches Redis through this, so "Redis is not
+    # there" -- real or injected with FAULT_INJECT=redis:unavailable -- means
+    # the same thing everywhere: take the fallback, and say so.
+    app.state.coordinator = Coordinator(
+        redis_client,
+        FaultInjector(settings.fault_specs),
+        down_backoff_s=settings.redis_down_backoff_s,
+    )
+    app.state.rate_limiter = RateLimiter(
+        app.state.coordinator,
+        capacity=settings.rate_limit_capacity,
+        refill_per_s=settings.rate_limit_refill_per_s,
+    )
     # Compiled once; each turn supplies its own context (graph/context.py).
     app.state.graph = build_graph(build_checkpointer(checkpointer_pool))
     app.state.transcript = SqlTranscript(app.state.session_factory)

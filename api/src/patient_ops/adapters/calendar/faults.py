@@ -23,10 +23,11 @@ from datetime import UTC, date, datetime, timedelta
 from typing import TYPE_CHECKING
 
 from patient_ops.adapters.calendar.base import Booking, BookingRequest, CalendarProvider, Slot
+from patient_ops.adapters.calendar.breaker import BreakerCalendar
 from patient_ops.adapters.calendar.fake import FakeCalendar
 from patient_ops.domain.availability import SchedulingPolicy
 from patient_ops.errors import ErrorCode, ToolError
-from patient_ops.faults import FaultInjector, FaultMode
+from patient_ops.faults import INJECTED, FaultInjector, FaultMode
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -34,8 +35,8 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
     from patient_ops.config import Settings
-
-INJECTED = "Injected"  # ToolError.cause for every injected failure -- never mistaken for real
+    from patient_ops.degradation import DegradedModes
+    from patient_ops.redis_layer.breaker import FailoverBreaker
 
 
 def _injected(target: str, mode: FaultMode) -> ToolError:
@@ -82,8 +83,12 @@ def build_calendar(
     session_factory: async_sessionmaker[AsyncSession],
     *,
     clock: Callable[[], datetime] = lambda: datetime.now(UTC),
+    breaker: FailoverBreaker | None = None,
+    degraded: DegradedModes | None = None,
 ) -> CalendarProvider:
-    """The calendar the app should use: FakeCalendar, wrapped only if FAULT_INJECT is set."""
+    """The calendar the app should use: FakeCalendar, wrapped in the fault
+    injector if FAULT_INJECT is set, and in the circuit breaker if one is given
+    -- outermost, so injected failures are failures the breaker counts."""
     calendar: CalendarProvider = FakeCalendar(
         session_factory,
         tz=settings.clinic_tz,
@@ -95,4 +100,8 @@ def build_calendar(
         clock=clock,
     )
     injector = FaultInjector(settings.fault_specs)
-    return FaultyCalendar(calendar, injector) if injector else calendar
+    if injector:
+        calendar = FaultyCalendar(calendar, injector)
+    if breaker is not None:
+        calendar = BreakerCalendar(calendar, breaker, degraded=degraded)
+    return calendar

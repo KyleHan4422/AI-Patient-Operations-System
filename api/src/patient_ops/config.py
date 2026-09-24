@@ -49,6 +49,27 @@ class Settings(BaseSettings):
     redis_url: str = "redis://localhost:6379/0"
     redis_connect_timeout_s: float = 2.0
     redis_socket_timeout_s: float = 2.0
+    # After Redis fails, how long every coordination feature takes its
+    # fallback straight away instead of waiting out another timeout. It is
+    # also how long a recovered Redis goes unused -- a few seconds either way.
+    redis_down_backoff_s: float = Field(default=5.0, ge=0, le=60)
+    # R1 slot holds: how long an offered slot is kept for the patient who was
+    # offered it. Long enough to read three options and answer; short enough
+    # that an abandoned conversation does not hide a slot for long.
+    hold_ttl_s: int = Field(default=120, ge=5, le=900)
+    # R4 in-flight dedup: how long a claim lives if its owner dies mid-write,
+    # and how long a duplicate request waits for the original's result.
+    idempotency_inflight_ttl_s: int = Field(default=30, ge=1, le=300)
+    idempotency_wait_s: float = Field(default=5.0, gt=0, le=60)
+    # R3 circuit breaker around the calendar: consecutive failures that open
+    # it, and how long it stays open before one probe is let through.
+    breaker_failure_threshold: int = Field(default=5, ge=1, le=100)
+    breaker_cooldown_s: float = Field(default=30.0, gt=0, le=600)
+    # R5 rate limit on chat turns, per client: a token bucket. 20 turns in a
+    # burst, then one every three seconds.
+    rate_limit_enabled: bool = True
+    rate_limit_capacity: int = Field(default=20, ge=1, le=10_000)
+    rate_limit_refill_per_s: float = Field(default=0.33, gt=0, le=1_000)
 
     # --- Health -----------------------------------------------------------
     # Per-dependency probe budget. A health endpoint that can hang is worse

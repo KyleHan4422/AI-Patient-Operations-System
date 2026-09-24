@@ -14,8 +14,11 @@ jobs:
 
     # A real Postgres, because the guarantees under test -- the no_overlap
     # EXCLUDE constraint, the UNIQUE idempotency key -- exist only in Postgres.
-    # Same image and host port as docker-compose.yml. Redis is still not
-    # needed: its failures are injected, not produced.
+    # A real Redis too, for the same reason: the coordination layer's tests
+    # check that a Lua script is atomic and that a key expires, which only the
+    # server can say. Its *absence* needs no service -- test_degradation.py
+    # injects it, and also points at a port nothing listens on.
+    # Same images and host ports as docker-compose.yml.
     services:
       postgres:
         image: pgvector/pgvector:pg16
@@ -30,9 +33,19 @@ jobs:
           --health-interval 3s
           --health-timeout 3s
           --health-retries 20
+      redis:
+        image: redis:7-alpine
+        ports:
+          - "6379:6379"
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 3s
+          --health-timeout 3s
+          --health-retries 20
 
     env:
       DATABASE_URL: postgresql://patient_ops:patient_ops@localhost:5433/patient_ops
+      REDIS_URL: redis://localhost:6379/0
       # Property tests replay the same examples on every run, so a red build
       # is reproducible locally with HYPOTHESIS_PROFILE=ci.
       HYPOTHESIS_PROFILE: ci

@@ -8,6 +8,11 @@ Two kinds of test live in this suite:
               the EXCLUDE constraint, the UNIQUE idempotency key -- exist only
               in Postgres. A mock would only test the mock. Any test that uses
               a database fixture is marked `db` automatically.
+  redis tests Run against a real Redis, for the same reason: what they check
+              is that a Lua script is atomic and a key expires, which only the
+              server can say. Database 15, emptied before every test, so the
+              development data in database 0 is never touched. Marked `redis`
+              automatically.
 
 The test database is dropped and rebuilt at the start of every session by
 running the real migrations (and LangGraph's checkpointer setup, exactly as
@@ -25,8 +30,10 @@ from __future__ import annotations
 import os
 from collections.abc import AsyncIterator
 from pathlib import Path
+from urllib.parse import urlsplit, urlunsplit
 
 import pytest
+import redis as sync_redis
 from alembic import command
 from alembic.config import Config
 from hypothesis import settings as hypothesis_settings
@@ -41,6 +48,7 @@ from patient_ops.db.models import LANGGRAPH_TABLES, Base
 from patient_ops.db.session import build_engine, build_session_factory
 from patient_ops.domain.availability import SchedulingPolicy
 from patient_ops.graph.checkpointer import setup_checkpointer
+from patient_ops.redis_layer.client import Coordinator, build_redis_client
 from tests.factories import FIXED_NOW, TZ, Clinic, build_minimal_clinic
 
 API_DIR = Path(__file__).resolve().parents[1]
@@ -49,6 +57,26 @@ TEST_DB_NAME = "patient_ops_test"
 # of LangGraph's schema is installed, not test data.
 LANGGRAPH_DATA_TABLES = sorted(LANGGRAPH_TABLES - {"checkpoint_migrations"})
 DB_FIXTURES = {"test_database_url", "engine", "session_factory", "clinic", "calendar"}
+REDIS_FIXTURES = {"test_redis_url", "redis_client", "coordinator"}
+TEST_REDIS_DB = 15
+# FLUSHDB is only ever sent to Redis on this machine or CI's service container.
+LOCAL_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
+
+
+def redis_test_url(url: str) -> str:
+    """REDIS_URL with its database swapped for the test one, everything else kept.
+
+    Refuses a Redis that is not local -- the same promise truncate_all makes
+    for Postgres: whatever REDIS_URL says, the suite cannot empty a shared
+    server.
+    """
+    parts = urlsplit(url)
+    if parts.scheme not in ("redis", "rediss"):
+        raise ValueError(f"REDIS_URL must be redis:// or rediss://, got {url!r}")
+    if parts.hostname not in LOCAL_HOSTS:
+        raise ValueError(f"refusing to run tests against non-local Redis {parts.hostname!r}")
+    return urlunsplit(parts._replace(path=f"/{TEST_REDIS_DB}"))
+
 
 # Property tests: reproducible in CI (same examples every run), exploratory
 # locally (new examples each run; failures are replayed from .hypothesis/).
@@ -59,8 +87,11 @@ hypothesis_settings.load_profile(os.getenv("HYPOTHESIS_PROFILE", "dev"))
 
 def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
     for item in items:
-        if DB_FIXTURES & set(getattr(item, "fixturenames", ())):
+        fixtures = set(getattr(item, "fixturenames", ()))
+        if DB_FIXTURES & fixtures:
             item.add_marker(pytest.mark.db)
+        if REDIS_FIXTURES & fixtures:
+            item.add_marker(pytest.mark.redis)
 
 
 def alembic_config(url: str) -> Config:
@@ -109,12 +140,54 @@ def test_database_url() -> str:
 # ---------------------------------------------------------------------------
 # Function scope: a private engine per test, every table emptied afterwards.
 # ---------------------------------------------------------------------------
+@pytest.fixture(scope="session")
+def test_redis_url() -> str:
+    try:
+        url = redis_test_url(get_settings().redis_url)
+    except ValueError as exc:
+        pytest.fail(str(exc), pytrace=False)
+    client = sync_redis.Redis.from_url(url, socket_connect_timeout=2)
+    try:
+        client.ping()
+    except sync_redis.ConnectionError as exc:
+        # Fail, never skip -- the same rule as Postgres above.
+        pytest.fail(f"Redis is not reachable at {url} -- run `make up`.\n{exc}", pytrace=False)
+    finally:
+        client.close()
+    return url
+
+
 @pytest.fixture
 def test_settings(test_database_url: str) -> Settings:
     # A pool wide enough for the concurrency tests to hold 10+ connections at once.
+    # Rate limiting is off: it is per client, every test client is the same
+    # address, and a chat test must not fail for having run after others.
+    # Tests of the limiter turn it back on, against the test Redis.
     return Settings(
-        app_env="test", database_url=test_database_url, db_pool_min_size=1, db_pool_max_size=15
+        app_env="test",
+        database_url=test_database_url,
+        db_pool_min_size=1,
+        db_pool_max_size=15,
+        # Computed, not the `test_redis_url` fixture: that one pings Redis,
+        # and a database test must not start needing Redis to run.
+        redis_url=redis_test_url(get_settings().redis_url),
+        rate_limit_enabled=False,
     )
+
+
+@pytest.fixture
+async def redis_client(test_redis_url: str) -> AsyncIterator:
+    client = build_redis_client(test_redis_url, connect_timeout_s=2, socket_timeout_s=2)
+    await client.flushdb()
+    try:
+        yield client
+    finally:
+        await client.aclose()
+
+
+@pytest.fixture
+def coordinator(redis_client) -> Coordinator:
+    return Coordinator(redis_client)
 
 
 async def truncate_all(engine: AsyncEngine) -> None:

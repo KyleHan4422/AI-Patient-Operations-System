@@ -36,6 +36,7 @@ async def respond(state: AgentState, runtime: Runtime[GraphContext]) -> dict[str
     # The trace is read from the context, not from state: it is per-turn
     # evidence, and the checkpoint is the conversation's long-term memory.
     trace = ctx.toolset.trace if ctx.toolset is not None else []
+    degraded = ctx.degraded.modes
 
     await ctx.recorder.record_turn(
         TurnRecord(
@@ -48,6 +49,7 @@ async def respond(state: AgentState, runtime: Runtime[GraphContext]) -> dict[str
                 "intent": state.get("intent"),
                 "answer_kind": state.get("answer_kind"),
                 "citations": state.get("citations") or [],
+                "degraded_modes": degraded,
             },
             tool_calls=tuple(
                 ToolCallRecord(
@@ -61,4 +63,8 @@ async def respond(state: AgentState, runtime: Runtime[GraphContext]) -> dict[str
             kb_gap=KbGapRecord(**gap) if gap else None,
         )
     )
-    return {"messages": [AIMessage(final)], "final_response": final}
+    return {
+        "messages": [AIMessage(final)],
+        "final_response": final,
+        "degraded_modes": degraded,
+    }

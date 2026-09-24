@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 
+from patient_ops.adapters.calendar.breaker import BreakerCalendar
 from patient_ops.adapters.calendar.fake import FakeCalendar
 from patient_ops.adapters.calendar.faults import FaultyCalendar, build_calendar
 from patient_ops.config import Settings
@@ -27,6 +28,8 @@ def test_parse_specs():
         "check_availability:conflict",  # a read cannot conflict
         "book_appointment:timeout@0",  # attempts count from 1
         "book_appointment:timeout@first",
+        "redis:timeout",  # Redis is either there or not
+        "book_appointment:unavailable",  # a calendar outage is a timeout, not a mode of its own
     ],
 )
 def test_malformed_specs_are_rejected(bad: str):
@@ -40,6 +43,13 @@ def test_injector_counts_attempts_per_target():
     assert injector.next_fault("check_availability") is None  # other targets count separately
     assert injector.next_fault("book_appointment") is FaultMode.TIMEOUT  # attempt 2
     assert injector.next_fault("book_appointment") is None  # attempt 3
+
+
+def test_redis_can_be_made_unavailable():
+    injector = FaultInjector.from_string("redis:unavailable")
+    assert injector.next_fault("redis") is FaultMode.UNAVAILABLE
+    assert injector.next_fault("redis") is FaultMode.UNAVAILABLE, "on every attempt"
+    assert injector.next_fault("book_appointment") is None
 
 
 def test_a_typo_in_fault_inject_fails_at_boot():
@@ -61,3 +71,15 @@ def test_build_calendar_wraps_only_when_faults_are_configured():
         Settings(app_env="test", fault_inject="book_appointment:timeout"), session_factory=None
     )
     assert isinstance(wrapped, FaultyCalendar)
+
+
+def test_the_breaker_wraps_outside_the_fault_injector():
+    """Outermost, so injected failures are failures the breaker counts."""
+    breaker = object()  # never called: this only checks the wrapping order
+    calendar = build_calendar(
+        Settings(app_env="test", fault_inject="book_appointment:timeout"),
+        session_factory=None,
+        breaker=breaker,
+    )
+    assert isinstance(calendar, BreakerCalendar)
+    assert isinstance(calendar.inner, FaultyCalendar)
