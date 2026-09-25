@@ -1,6 +1,6 @@
 # Knowledge answering -- `fake`
 
-_Generated 2026-09-23 by `make eval-knowledge`. 48 questions, 61 chunks, embeddings `fake-hashing-v1`._
+_Generated 2026-09-25 by `make eval-knowledge`. 48 questions, 61 chunks, embeddings `fake-hashing-v1`._
 
 **31/48 questions behaved as expected.**
 

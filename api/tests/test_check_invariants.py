@@ -35,6 +35,9 @@ def scan(tmp_path: Path, source: str) -> list[str]:
         "from redis.asyncio import Redis",
         "from patient_ops.rag.retrieve import search_knowledge_base",  # tools/ only
         "import patient_ops.rag.ingest",
+        "from patient_ops.tools.booking import BookingDesk",  # the write side of tools/
+        "from patient_ops.graph.nodes.booking import execute_booking",
+        "from ..tools import booking",
         "def later():\n    from patient_ops.db.repo import find_patients\n",  # function-local
         # type-only imports count: agents should not even type against the ORM
         "if TYPE_CHECKING:\n    from patient_ops.db.models import Patient\n",
@@ -49,6 +52,7 @@ def test_write_capable_imports_are_caught(tmp_path: Path, source: str):
     "source",
     [
         "from patient_ops.tools import knowledge",  # the sanctioned way to read
+        "from patient_ops.tools.registry import ReadOnlyToolset",
         "from . import base",
         "from patient_ops.domain.availability import compute_slots",  # pure logic
         "import datetime\nfrom pydantic import BaseModel",

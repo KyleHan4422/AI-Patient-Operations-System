@@ -1,9 +1,14 @@
 """What the patient wants, in one word. The first node of every turn.
 
 Three destinations, and the routing decides which part of the system is even
-allowed to run: the knowledge agent and its read-only tools, the deterministic
-"not yet" for bookings (Phase 6 replaces it with the real path), or a reply
-that touches no clinic data at all.
+allowed to run: the knowledge agent and its read-only tools, the booking path,
+or a reply that touches no clinic data at all.
+
+A booking takes several turns, and most of them do not look like a booking on
+their own: "yes", "the second one", "(212) 555-0101". The prompt says so, and
+while a booking is in progress a message labelled small talk goes to the
+booking path anyway -- a "yes" to "Shall I book it?" answered with "You're
+welcome!" would leave the patient believing they were booked.
 
 Two things this node is deliberately not:
 
@@ -29,6 +34,7 @@ from langgraph.runtime import Runtime
 from pydantic import BaseModel, Field, ValidationError
 
 from patient_ops.graph.context import GraphContext
+from patient_ops.graph.nodes.booking import active_draft
 from patient_ops.graph.state import AgentState
 from patient_ops.obs.logging import get_logger
 
@@ -55,7 +61,10 @@ knowledge   A question about this clinic: opening hours, prices, which
             insurance is taken, policies, cancellations, aftercare, what to
             bring, what to expect. Also anything you are not sure about.
 booking     They want to make, move, confirm or cancel an appointment, or are
-            asking which times are free.
+            asking which times are free. Also a reply to the assistant's
+            booking questions: a phone number, a name or date of birth, a
+            treatment, a day, picking one of the offered times, or yes/no to
+            "Shall I book it?".
 smalltalk   A greeting, a thank-you, a goodbye, or a remark with no question
             in it."""
 
@@ -81,6 +90,18 @@ async def classify_intent(state: AgentState, runtime: Runtime[GraphContext]) -> 
         # answering every question from the wrong branch.
         log.warning("intent_unparseable", error=str(exc), fallback=FALLBACK_INTENT)
         intent = FALLBACK_INTENT
+        unreadable = True
+    else:
+        unreadable = False
+
+    # While a booking is open, a reply that is not clearly a question about the
+    # clinic continues it. A real "knowledge" label still goes to the agent --
+    # "how much is a cleaning?" mid-booking deserves an answer -- but small
+    # talk ("ok", "thanks") and an unreadable label do not abandon the booking.
+    if intent != "booking" and (intent == "smalltalk" or unreadable) and ctx.booking is not None:
+        if active_draft(state, ctx.booking.now()) is not None:
+            log.info("intent_continues_booking", classified=intent, unreadable=unreadable)
+            intent = "booking"
 
     log.info(
         "intent_classified",

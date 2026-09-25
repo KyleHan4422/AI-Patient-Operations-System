@@ -14,7 +14,7 @@ evaluation case:
   - Aetna is deliberately absent. (Phase 4: "not on file" must come back as
     unknown, and the agent must abstain rather than guess.)
   - Two patients share a name. (Phase 6: patient search returns "multiple" and
-    the agent must ask a follow-up question.)
+    the booking path asks for a date of birth rather than pick one.)
   - WHITENING has no price on file. (Phase 4: the price tool must say so.)
   - Only Dr. Chen works Saturday mornings -- "Saturdays by appointment".
 

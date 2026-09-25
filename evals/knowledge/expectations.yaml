@@ -33,9 +33,11 @@ provider_availability:
   kind: booking_deferred
   why: >-
     "Anything free on Thursday afternoon" is availability, which depends on the
-    treatment and on what is already booked. It belongs to the booking path
-    (Phase 6), not to a lookup, and answering it from the opening hours would
-    be a confident wrong answer.
+    treatment and on what is already booked. It belongs to the booking path,
+    not to a lookup, and answering it from the opening hours would be a
+    confident wrong answer. This eval wires in no calendar, so the booking
+    branch answers with its fixed "not here" sentence -- which is the check:
+    it was routed to booking, not answered from the hours.
 
 cleaning_duration:
   kind: abstained

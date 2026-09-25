@@ -166,11 +166,12 @@ async def test_respond_has_the_last_word_on_an_empty_draft():
 # ---------------------------------------------------------------------------
 # Routing
 # ---------------------------------------------------------------------------
-async def test_booking_is_answered_without_a_model():
-    """The booking branch reaches no model at all until Phase 6 builds it.
+async def test_booking_without_a_calendar_is_answered_without_a_model():
+    """Where no calendar is wired in, the booking branch says so and asks no model.
 
     The echo model would have said something recognisable; the fixed sentence
-    is what proves nothing asked it to.
+    is what proves nothing asked it to. The booking path itself has its own
+    tests, against a real database and Redis (test_booking_flow.py).
     """
     chat = Chat(PinnedIntent(intent="booking"))
     tokens, reply = await chat.say("I would like to book a cleaning")

@@ -85,10 +85,15 @@ def build_calendar(
     clock: Callable[[], datetime] = lambda: datetime.now(UTC),
     breaker: FailoverBreaker | None = None,
     degraded: DegradedModes | None = None,
+    injector: FaultInjector | None = None,
 ) -> CalendarProvider:
     """The calendar the app should use: FakeCalendar, wrapped in the fault
     injector if FAULT_INJECT is set, and in the circuit breaker if one is given
-    -- outermost, so injected failures are failures the breaker counts."""
+    -- outermost, so injected failures are failures the breaker counts.
+
+    Pass the process's `injector` when building one calendar per turn: its
+    attempt counts are the scenario, and "the first booking times out" means
+    the first of the process, not the first of every turn."""
     calendar: CalendarProvider = FakeCalendar(
         session_factory,
         tz=settings.clinic_tz,
@@ -99,7 +104,7 @@ def build_calendar(
         ),
         clock=clock,
     )
-    injector = FaultInjector(settings.fault_specs)
+    injector = injector if injector is not None else FaultInjector(settings.fault_specs)
     if injector:
         calendar = FaultyCalendar(calendar, injector)
     if breaker is not None:

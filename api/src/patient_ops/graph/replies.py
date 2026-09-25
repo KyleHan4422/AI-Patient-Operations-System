@@ -12,15 +12,15 @@ ever reach here.
 
 Everything in this file is a pure function of a fact. That makes the sentences
 testable -- "an unknown plan never produces a sentence containing 'we don't
-accept'" is an assertion, not a hope -- and it is the same shape Phase 6 needs
-when a booking confirmation is filled from the verified appointment row.
+accept'" is an assertion, not a hope -- and it is the same shape the booking
+confirmation below has: filled from the verified appointment row.
 """
 
 from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import date, time
+from datetime import date, datetime, time
 
 from patient_ops.tools.facts import (
     Fact,
@@ -42,6 +42,8 @@ ABSTENTION = (
     "The front desk will be able to tell you -- they have the details I don't."
 )
 
+# Only when this deployment has no calendar wired in -- an evaluation run, a
+# graph test. With one, the booking path below answers instead.
 BOOKING_NOT_YET = (
     "I can't book, change or cancel appointments yet, so please call the clinic for that. "
     "I can help with opening hours, prices, which insurance plans we take, "
@@ -141,13 +143,16 @@ def hours_sentence(fact: HoursFact) -> str:
             "The front desk can tell you."
         )
     # Said plainly, because it is the confusion this answer invites: the doors
-    # being open is not the same as a slot being free, and this assistant
-    # cannot see slots at all until Phase 6.
+    # being open is not the same as a slot being free. Free times depend on
+    # the treatment and on what is booked, and only the booking path sees them.
     sentence = "We're open " + "; ".join(_grouped_days(fact.windows)) + "."
     if fact.closures:
         shut = ", ".join(f"{c.day:%a %d %b} ({c.reason})" for c in fact.closures)
         sentence += f" We're closed on {shut}."
-    return sentence + " That's when the clinic is open -- I can't see free appointment times yet."
+    return sentence + (
+        " That's when the clinic is open, not when there are free appointment times -- "
+        "ask me to book and I'll look those up for you."
+    )
 
 
 def fact_sentence(fact: Fact) -> str:
@@ -182,3 +187,117 @@ def sources_block(citations: Sequence[Citation]) -> str:
         return f"Source: {one.heading_path} (as of {one.effective_date})"
     listed = "\n".join(f"- {c.heading_path} (as of {c.effective_date})" for c in citations)
     return f"Sources:\n{listed}"
+
+
+# ---------------------------------------------------------------------------
+# Booking
+# ---------------------------------------------------------------------------
+# Every sentence of the booking path is written here, by code. The one that
+# matters most -- "you're booked" -- is filled from the appointment row that
+# was read back after the write, never from what was asked for.
+ASK_PHONE = "I can help you book that. What's the phone number you registered with the clinic?"
+ASK_PHONE_AGAIN = (
+    "That doesn't look like a phone number I can look up. "
+    "Could you send it with the area code, like (212) 555-0100?"
+)
+ASK_DOB = (
+    "I found more than one patient with that name. "
+    "What's your date of birth? (For example 1985-04-12.)"
+)
+PATIENT_NOT_FOUND = (
+    "I couldn't find you in our records, so I can't book this online. "
+    "Please call the front desk -- they'll get you set up."
+)
+BOOKING_CHANGES_NOT_YET = (
+    "I can't change or cancel an existing appointment yet, so please call the clinic "
+    "for that. I can book a new appointment for you, or help with opening hours, "
+    "prices and insurance."
+)
+SLOT_TAKEN = "Sorry -- that time has just been taken."
+SLOT_UNAVAILABLE = "Sorry -- that time can't be booked after all."
+OFFERS_STALE = "Those times were offered a while ago, so here's what's free now."
+CALENDAR_UNAVAILABLE = (
+    "I can't reach the appointment calendar right now, so nothing has been booked. "
+    "Please try again in a few minutes, or call the front desk."
+)
+# The two below keep the chosen time: the question is still open, and a yes
+# retries with the same idempotency key -- so it cannot book twice.
+CALENDAR_NO_ANSWER = (
+    "The appointment calendar didn't answer, and I can't see a booking for you, "
+    "so nothing has been booked. Shall I try booking it again? "
+    "You can also call the front desk."
+)
+BOOKING_UNVERIFIED = (
+    "I couldn't confirm whether that booking went through. Shall I try booking it "
+    "again? It won't book you twice -- or you can call the front desk to check."
+)
+CALENDAR_PAUSED = (
+    "I can't reach the appointment calendar right now, so nothing has been booked. "
+    "Give it a few minutes and say yes, and I'll try booking it again -- "
+    "or call the front desk."
+)
+BOOKING_UNCERTAIN = (
+    "I couldn't confirm whether that booking went through, so please don't book it "
+    "again -- call the front desk and they'll check it for you."
+)
+
+
+@dataclass(frozen=True)
+class SlotView:
+    """A slot as a patient reads it: who, when, in the clinic's own time."""
+
+    provider_name: str
+    start_at: datetime  # clinic-local
+
+
+def _when(start_at: datetime) -> str:
+    return f"{start_at:%a %d %b} at {start_at:%H:%M}"
+
+
+def ask_procedure(names: Sequence[str]) -> str:
+    listed = ", ".join(names)
+    return f"What would you like to come in for? We book: {listed}."
+
+
+def no_slots(procedure_name: str, date_from: date, date_to: date) -> str:
+    span = (
+        f"{date_from:%a %d %b}"
+        if date_from == date_to
+        else (f"{date_from:%a %d %b} and {date_to:%a %d %b}")
+    )
+    return (
+        f"I don't see any free times for {procedure_name} between {span}. "
+        "Would another day or week work for you?"
+    )
+
+
+def offer_sentence(procedure_name: str, slots: Sequence[SlotView], *, lead: str = "") -> str:
+    lines = "\n".join(
+        f"{n}. {_when(s.start_at)} with {s.provider_name}" for n, s in enumerate(slots, 1)
+    )
+    head = f"{lead} " if lead else ""
+    return (
+        f"{head}Here are the next free times for {procedure_name}:\n{lines}\n"
+        "Which one would you like?"
+    )
+
+
+def read_back_sentence(procedure_name: str, slot: SlotView) -> str:
+    return (
+        f"Just to confirm: {procedure_name} with {slot.provider_name} on "
+        f"{_when(slot.start_at)}. Shall I book it?"
+    )
+
+
+def booking_confirmation(
+    *, procedure_name: str, provider_name: str, start_at: datetime, reference: str | None
+) -> str:
+    """The reply of record, from the appointment row the database holds.
+
+    `start_at` is the row's, converted to clinic time; `reference` is the
+    calendar's own id for it. Nothing here comes from the conversation.
+    """
+    sentence = f"You're booked: {procedure_name} with {provider_name} on {_when(start_at)}."
+    if reference:
+        sentence += f" Your reference is {reference}."
+    return sentence

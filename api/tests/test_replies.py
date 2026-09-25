@@ -7,16 +7,23 @@ price cannot acquire a number, whatever a language model would have written.
 
 from __future__ import annotations
 
-from datetime import date, time
+from datetime import date, datetime, time
 from decimal import Decimal
+from zoneinfo import ZoneInfo
 
 import pytest
 
 from patient_ops.graph.replies import (
+    CALENDAR_NO_ANSWER,
+    CALENDAR_PAUSED,
+    SLOT_TAKEN,
     Citation,
+    SlotView,
+    booking_confirmation,
     facts_block,
     hours_sentence,
     insurance_sentence,
+    offer_sentence,
     price_sentence,
     sources_block,
 )
@@ -173,3 +180,37 @@ def test_several_sources_are_listed():
     )
     assert listed.startswith("Sources:\n- ")
     assert listed.count("\n- ") == 2
+
+
+# ---------------------------------------------------------------------------
+# Booking
+# ---------------------------------------------------------------------------
+def test_a_confirmation_is_worded_from_the_row():
+    text = booking_confirmation(
+        procedure_name="Adult cleaning",
+        provider_name="Dr. Chen",
+        start_at=datetime(2026, 10, 2, 9, 0, tzinfo=ZoneInfo("America/New_York")),
+        reference="FC-1A2B3C4D",
+    )
+    assert text == (
+        "You're booked: Adult cleaning with Dr. Chen on Fri 02 Oct at 09:00. "
+        "Your reference is FC-1A2B3C4D."
+    )
+
+
+def test_offers_are_numbered_so_a_choice_is_a_number():
+    start = datetime(2026, 10, 2, 9, 0, tzinfo=ZoneInfo("America/New_York"))
+    text = offer_sentence(
+        "Adult cleaning",
+        [SlotView("Dr. Chen", start), SlotView("Dr. Chen", start.replace(hour=11))],
+        lead=SLOT_TAKEN,
+    )
+    assert text.startswith(SLOT_TAKEN)
+    assert "1. Fri 02 Oct at 09:00 with Dr. Chen\n2. Fri 02 Oct at 11:00" in text
+
+
+def test_the_retry_questions_ask_for_a_yes():
+    """A yes only confirms an answer to a question about booking -- so every
+    message after which a yes retries must ask one."""
+    assert "Shall I try booking it again?" in CALENDAR_NO_ANSWER
+    assert "say yes" in CALENDAR_PAUSED

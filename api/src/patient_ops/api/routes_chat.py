@@ -17,7 +17,7 @@ exactly:
 `done.text` is the reply of record. Clients show tokens as they arrive, then
 replace them with it. Most replies never stream a token at all: an answer about
 the clinic is checked against its evidence before it is said, and a booking
-confirmation (Phase 6) is filled from the row the database holds. `stage` is
+confirmation is filled from the row the database holds. `stage` is
 what a client shows meanwhile -- it says which branch the turn took, from the
 classifier's own output rather than from a guess.
 
@@ -39,7 +39,7 @@ from __future__ import annotations
 import time
 import uuid
 from collections.abc import AsyncIterator
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Annotated, Literal
 
 import psycopg
@@ -50,6 +50,7 @@ from fastapi.sse import EventSourceResponse, ServerSentEvent
 from langchain_core.language_models import BaseChatModel
 from pydantic import BaseModel, StringConstraints
 
+from patient_ops.adapters.calendar.faults import build_calendar
 from patient_ops.adapters.llm.client import classify_llm_error
 from patient_ops.adapters.llm.embeddings import embedding_model_name, min_score_for
 from patient_ops.db import repo
@@ -58,6 +59,9 @@ from patient_ops.errors import ErrorCode, ToolError
 from patient_ops.graph.context import GraphContext
 from patient_ops.graph.turn import Stage, Token, run_turn
 from patient_ops.obs.logging import get_logger
+from patient_ops.redis_layer.holds import SlotHolds
+from patient_ops.redis_layer.idempotency import InFlightDedup
+from patient_ops.tools.booking import BookingDesk
 from patient_ops.tools.registry import ReadOnlyToolset
 
 log = get_logger(__name__)
@@ -203,6 +207,43 @@ def require_toolset(request: Request) -> ReadOnlyToolset:
     )
 
 
+def booking_desk(
+    request: Request, degraded: Annotated[DegradedModes, Depends(turn_degradation)]
+) -> BookingDesk:
+    """What the booking path may reach this turn, and nothing an agent can.
+
+    Built per turn around long-lived parts: the breaker and the Redis
+    connection are the process's, while the calendar wrapper, the holds and
+    the dedup carry this turn's DegradedModes, so a fallback taken anywhere on
+    the booking path shows up in this turn's `done.degraded`.
+    """
+    state = request.app.state
+    settings = state.settings
+    return BookingDesk(
+        session_factory=state.session_factory,
+        calendar=build_calendar(
+            settings,
+            state.session_factory,
+            breaker=state.calendar_breaker,
+            degraded=degraded,
+            injector=state.fault_injector,
+        ),
+        holds=SlotHolds(
+            state.coordinator,
+            ttl=timedelta(seconds=settings.hold_ttl_s),
+            step=timedelta(minutes=settings.slot_step_min),
+            degraded=degraded,
+        ),
+        dedup=InFlightDedup(
+            state.coordinator,
+            inflight_ttl_s=settings.idempotency_inflight_ttl_s,
+            wait_s=settings.idempotency_wait_s,
+            degraded=degraded,
+        ),
+        tz=settings.clinic_tz,
+    )
+
+
 @router.post(
     "/turn", response_class=EventSourceResponse, dependencies=[Depends(enforce_rate_limit)]
 )
@@ -212,6 +253,7 @@ async def turn(
     degraded: Annotated[DegradedModes, Depends(turn_degradation)],
     chat_model: Annotated[BaseChatModel, Depends(require_chat_model)],
     toolset: Annotated[ReadOnlyToolset, Depends(require_toolset)],
+    booking: Annotated[BookingDesk, Depends(booking_desk)],
 ) -> AsyncIterator[ServerSentEvent]:
     state = request.app.state
     thread_id = body.thread_id or uuid.uuid4()
@@ -231,6 +273,7 @@ async def turn(
         channel=body.channel,
         history_limit=state.settings.chat_history_max_messages,
         toolset=toolset,
+        booking=booking,
         max_tool_rounds=state.settings.agent_max_tool_rounds,
         degraded=degraded,
     )

@@ -63,6 +63,10 @@ def turn_input(text: str) -> dict[str, Any]:
         "citations": None,
         "kb_gap": None,
         "degraded_modes": None,
+        "booking_proposal": None,
+        "appointment_id": None,
+        # Not `booking`: a booking in progress is carried from turn to turn
+        # on purpose, and only the booking path clears it.
     }
 
 

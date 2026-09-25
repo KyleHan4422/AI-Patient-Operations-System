@@ -17,7 +17,10 @@ It has two modes, because the graph asks two different things of a model.
                    picks a lookup tool, and turns what the tool returned into
                    a FinalAnswer. Enough to run the whole Phase 4 graph
                    offline -- routing, tool choice, the record templates, the
-                   grounding check, the KB_GAP -- without a key.
+                   grounding check, the KB_GAP -- without a key. It also reads
+                   a booking message into a BookingProposal: a phone number,
+                   a treatment, an ISO date, "the second one", "yes" -- so the
+                   booking path runs end to end offline too.
 
 What the stand-in cannot do is the one thing a language model is here for:
 judge whether a passage on the right topic actually answers the question. It
@@ -115,12 +118,45 @@ _PLAN_FILLER = frozenset(
 _CATALOGUE = re.compile(r"([A-Z][A-Z0-9_]{2,})\s+\(([^)]+)\)")
 
 
+# The assistant's own booking questions (graph/replies.py). A patient who
+# answers one -- "(212) 555-0101", "2", "yes" -- is still booking.
+_BOOKING_PROMPT = re.compile(
+    r"phone number|date of birth|like to come in for|Which one would you like"
+    r"|Shall I book it|try booking it again|another day or week",
+    re.I,
+)
+_PHONE = re.compile(r"\(?\b\d{3}\)?[\s.-]?\d{3}[\s.-]?\d{4}\b")
+_ISO_DATE = re.compile(r"\b(\d{4})-(\d{2})-(\d{2})\b")
+# Case-insensitive lead-in, case-sensitive name: "I'm looking to book" is not
+# a name, "I'm Maria Garcia" is.
+_NAME = re.compile(r"\b(?i:my name is|i am|i'm|this is)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)")
+# A bare digit is a choice only on its own or as "number 2" / "option 2":
+# "anything at 3?" is a time, not the third offer.
+_CHOICE = re.compile(
+    r"\b(first|second|third|1st|2nd|3rd)\b|^\W*([1-3])\W*$|\b(?:number|option|#)\s*([1-3])\b",
+    re.I,
+)
+_ORDINAL = {"first": 1, "1st": 1, "second": 2, "2nd": 2, "third": 3, "3rd": 3}
+_YES = re.compile(r"^\W*(?:yes|yeah|yep|sure|please do|book it|go ahead|ok|okay)\b", re.I)
+_NO = re.compile(r"^\W*(?:no|nope)\b", re.I)
+_CHANGE = re.compile(r"\b(?:reschedule|move|change)\s+(?:my|the)\s+appointment\b", re.I)
+_CANCEL = re.compile(r"\bcancel\b", re.I)
+_CONFIRM_QUESTION = re.compile(r"Shall I (?:book|try booking) it|say yes, and I'll try")
+_TODAY = re.compile(r"Today is \w+ (\d{4})-\d{2}-\d{2}")
+
+
 def _last_human(messages: Sequence[BaseMessage]) -> str:
     return next((m.text for m in reversed(messages) if isinstance(m, HumanMessage)), "")
 
 
-def classify_intent(question: str) -> str:
+def _last_assistant(messages: Sequence[BaseMessage]) -> str:
+    return next((m.text for m in reversed(messages) if isinstance(m, AIMessage) and m.text), "")
+
+
+def classify_intent(question: str, *, after: str = "") -> str:
     if _BOOKING.search(question):
+        return "booking"
+    if _BOOKING_PROMPT.search(after):
         return "booking"
     if _SMALLTALK.match(question.strip()):
         return "smalltalk"
@@ -211,18 +247,62 @@ def _final_answer(evidence: str) -> dict[str, Any]:
     return {"sufficient": True, "answer": "", "citations": []}
 
 
+def read_booking(messages: Sequence[BaseMessage]) -> dict[str, Any]:
+    """A BookingProposal for the latest message, by keyword.
+
+    Reads today's date, the treatment codes and the offered times from its own
+    prompt, as a real model would. An ISO date more than a year back is a date
+    of birth; any other is the day the patient wants to come in.
+    """
+    said = _last_human(messages)
+    prompt = next((m.text for m in messages if isinstance(m, SystemMessage)), "")
+    asked = _last_assistant(messages)
+    proposal: dict[str, Any] = {"action": "book"}
+
+    if _CHANGE.search(said):
+        return {"action": "change"}
+    if _CANCEL.search(said):
+        return {"action": "cancel"}
+    if phone := _PHONE.search(said):
+        proposal["phone"] = phone.group(0)
+    if name := _NAME.search(said):
+        proposal["full_name"] = name.group(1)
+    if code := _procedure_code(said, _catalogue(messages)):
+        proposal["procedure_code"] = code
+    if found := _ISO_DATE.search(said):
+        this_year = int(m.group(1)) if (m := _TODAY.search(prompt)) else 0
+        field = "date_of_birth" if int(found.group(1)) < this_year - 1 else "date_from"
+        proposal[field] = found.group(0)
+        if field == "date_from":
+            proposal["date_to"] = found.group(0)
+    if "Offered times:" in prompt and not phone and not found:
+        if choice := _CHOICE.search(said):
+            word = next(g for g in choice.groups() if g).lower()
+            proposal["choice"] = _ORDINAL.get(word) or int(word)
+    if _CONFIRM_QUESTION.search(asked):
+        if _YES.match(said):
+            proposal["confirmed"] = "yes"
+        elif _NO.match(said):
+            proposal["confirmed"] = "no"
+    return proposal
+
+
 def play_front_desk(messages: list[BaseMessage], available: Sequence[str]) -> AIMessage:
     question = _last_human(messages)
     call_id = f"call_{sum(isinstance(m, AIMessage) for m in messages)}"
 
-    if len(available) == 1 and available[0] not in {"FinalAnswer", "search_documents"}:
-        # A single bound schema is with_structured_output(), not an agent loop.
-        # Today that is only the intent classifier.
+    if available == ["BookingProposal"]:
         return AIMessage(
             content="",
-            tool_calls=[
-                {"name": available[0], "args": {"intent": classify_intent(question)}, "id": call_id}
-            ],
+            tool_calls=[{"name": "BookingProposal", "args": read_booking(messages), "id": call_id}],
+        )
+    if len(available) == 1 and available[0] not in {"FinalAnswer", "search_documents"}:
+        # A single bound schema is with_structured_output(), not an agent loop:
+        # the intent classifier.
+        intent = classify_intent(question, after=_last_assistant(messages))
+        return AIMessage(
+            content="",
+            tool_calls=[{"name": available[0], "args": {"intent": intent}, "id": call_id}],
         )
 
     last = messages[-1] if messages else None

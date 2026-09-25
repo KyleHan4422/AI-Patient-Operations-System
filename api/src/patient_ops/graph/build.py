@@ -1,20 +1,21 @@
 """The conversation graph, compiled once per process.
 
-                            +-- booking  ----> booking_deferred --+
-    START -> classify_intent|                                     |-> respond -> END
-                            +-- smalltalk --> smalltalk_reply ----+
-                            |                                     |
-                            +-- knowledge -> knowledge_agent ->   |
-                                             verify_answer -------+
+                            +-- booking --> booking_agent -> plan_booking --+
+                            |                    (execute_booking ->        |
+                            |                     verify_booking) ----------+
+    START -> classify_intent|                                               |-> respond -> END
+                            +-- smalltalk --> smalltalk_reply --------------+
+                            |                                               |
+                            +-- knowledge -> knowledge_agent ->             |
+                                             verify_answer -----------------+
 
 Every branch converges on `respond`, which is the only node that writes an
-assistant message. The knowledge branch is the only one that reaches clinic
-data, and it cannot speak directly: `verify_answer` sits between the agent and
-the exit, deciding without a model whether what the agent proposed is
-supported by what it actually retrieved.
-
-Phase 6 replaces booking_deferred with the deterministic validate -> execute ->
-verify path and adds the second read-only agent; nothing else here moves.
+assistant message. Neither model-driven branch can speak for itself:
+`verify_answer` decides, without a model, whether the knowledge agent's answer
+is supported by what it retrieved; and on the booking branch the model only
+reads the patient's message -- plan_booking decides the next step, and only
+the path through execute_booking and verify_booking can write an appointment
+and say it was written.
 """
 
 from __future__ import annotations
@@ -24,7 +25,13 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
 from patient_ops.graph.context import GraphContext
-from patient_ops.graph.nodes.booking_deferred import booking_deferred
+from patient_ops.graph.nodes.booking import (
+    booking_agent,
+    execute_booking,
+    plan_booking,
+    route_after_plan,
+    verify_booking,
+)
 from patient_ops.graph.nodes.classify_intent import classify_intent
 from patient_ops.graph.nodes.knowledge_agent import knowledge_agent
 from patient_ops.graph.nodes.respond import respond
@@ -45,7 +52,7 @@ USER_FACING_NODES: frozenset[str] = frozenset({"smalltalk_reply"})
 
 INTENT_ROUTES: dict[str, str] = {
     "knowledge": "knowledge_agent",
-    "booking": "booking_deferred",
+    "booking": "booking_agent",
     "smalltalk": "smalltalk_reply",
 }
 
@@ -61,7 +68,10 @@ def build_graph(checkpointer: BaseCheckpointSaver) -> CompiledStateGraph:
     graph.add_node("classify_intent", classify_intent)
     graph.add_node("knowledge_agent", knowledge_agent)
     graph.add_node("verify_answer", verify_answer)
-    graph.add_node("booking_deferred", booking_deferred)
+    graph.add_node("booking_agent", booking_agent)
+    graph.add_node("plan_booking", plan_booking)
+    graph.add_node("execute_booking", execute_booking)
+    graph.add_node("verify_booking", verify_booking)
     graph.add_node("smalltalk_reply", smalltalk_reply)
     graph.add_node("respond", respond)
 
@@ -71,7 +81,14 @@ def build_graph(checkpointer: BaseCheckpointSaver) -> CompiledStateGraph:
     )
     graph.add_edge("knowledge_agent", "verify_answer")
     graph.add_edge("verify_answer", "respond")
-    graph.add_edge("booking_deferred", "respond")
+    graph.add_edge("booking_agent", "plan_booking")
+    # Only a "yes" to a read-back goes on to the write; every other step of a
+    # booking is a question or an offer, and goes straight out.
+    graph.add_conditional_edges("plan_booking", route_after_plan, ["execute_booking", "respond"])
+    # Unconditional: whatever the write did -- succeeded, failed, timed out --
+    # the next step is to find out what is actually in the calendar.
+    graph.add_edge("execute_booking", "verify_booking")
+    graph.add_edge("verify_booking", "respond")
     graph.add_edge("smalltalk_reply", "respond")
     graph.add_edge("respond", END)
     return graph.compile(checkpointer=checkpointer)

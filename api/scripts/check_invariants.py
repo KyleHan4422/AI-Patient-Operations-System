@@ -50,11 +50,17 @@ ALLOW_MARKER = "noqa: invariant"
 # Modules agents/ must not import -- each one can change state, or is a layer
 # agents are not allowed to reach into directly. A module and everything
 # beneath it: "patient_ops.db" also covers "patient_ops.db.repo".
-# Grows with the project: Phase 6 adds patient_ops.tools.booking, Phase 10
-# adds patient_ops.tools.escalation.
+# Grows with the project: Phase 10 adds patient_ops.tools.escalation.
 DENIED_IMPORTS: tuple[str, ...] = (
     "patient_ops.db",
     "patient_ops.adapters",
+    # The booking desk: holds, the calendar write, the read-back. tools/ is
+    # otherwise where agents are *meant* to reach data, so this one module is
+    # named on its own -- the read-only toolset stays importable.
+    "patient_ops.tools.booking",
+    # The booking nodes, which hold the desk. An agent that imported the graph
+    # could call execute_booking directly.
+    "patient_ops.graph",
     # Retrieval is read-only, but rag/ingest.py writes, and an agent that can
     # reach the corpus can rewrite what it is later grounded against. Agents
     # search through the read-only tools in tools/ instead.

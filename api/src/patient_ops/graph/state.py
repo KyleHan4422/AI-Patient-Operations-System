@@ -51,3 +51,13 @@ class AgentState(TypedDict):
     # `respond`, from the turn's context, so a degraded turn is visible in the
     # state, the transcript's meta and the `done` event alike.
     degraded_modes: list[str] | None
+    # The booking in progress (graph/nodes/booking.py's BookingDraft, as a
+    # dict). The one field that deliberately outlives a turn: a booking takes
+    # several -- who you are, what for, which time, "yes" -- and each turn
+    # carries on from where the last one stopped. Cleared when it ends.
+    booking: dict[str, Any] | None
+    # What the booking reader made of this turn's message (agents/booking.py).
+    # A proposal, like `verdict`: plan_booking decides what happens to it.
+    booking_proposal: dict[str, Any] | None
+    # Set on the turn that wrote an appointment, from the row read back.
+    appointment_id: int | None

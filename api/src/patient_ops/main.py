@@ -31,6 +31,7 @@ from patient_ops.graph.build import build_graph
 from patient_ops.graph.checkpointer import build_checkpointer, build_checkpointer_pool
 from patient_ops.health import HealthReport, Probe, check_health
 from patient_ops.obs.logging import RequestIdMiddleware, configure_logging, get_logger
+from patient_ops.redis_layer.breaker import build_breaker
 from patient_ops.redis_layer.client import Coordinator, build_redis_client
 from patient_ops.redis_layer.ratelimit import RateLimiter
 
@@ -103,15 +104,28 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # Every coordination feature reaches Redis through this, so "Redis is not
     # there" -- real or injected with FAULT_INJECT=redis:unavailable -- means
     # the same thing everywhere: take the fallback, and say so.
+    # One injector for the process: FAULT_INJECT's attempt counts ("@1") are
+    # counted across every turn, for Redis and the calendar alike.
+    app.state.fault_injector = FaultInjector(settings.fault_specs)
     app.state.coordinator = Coordinator(
         redis_client,
-        FaultInjector(settings.fault_specs),
+        app.state.fault_injector,
         down_backoff_s=settings.redis_down_backoff_s,
     )
     app.state.rate_limiter = RateLimiter(
         app.state.coordinator,
         capacity=settings.rate_limit_capacity,
         refill_per_s=settings.rate_limit_refill_per_s,
+    )
+    # R3: one breaker around the calendar for the whole process -- and, while
+    # Redis answers, shared with every other worker. Each turn wraps its own
+    # calendar in it (api/routes_chat.py), so the turn's degraded modes say
+    # when the breaker fell back to this process's own.
+    app.state.calendar_breaker = build_breaker(
+        app.state.coordinator,
+        "calendar",
+        failure_threshold=settings.breaker_failure_threshold,
+        cooldown_s=settings.breaker_cooldown_s,
     )
     # Compiled once; each turn supplies its own context (graph/context.py).
     app.state.graph = build_graph(build_checkpointer(checkpointer_pool))

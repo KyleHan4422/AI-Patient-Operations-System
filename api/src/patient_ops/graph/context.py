@@ -20,6 +20,7 @@ from langchain_core.language_models import BaseChatModel
 
 from patient_ops.db.transcript import TurnRecord
 from patient_ops.degradation import DegradedModes
+from patient_ops.tools.booking import BookingDesk
 from patient_ops.tools.registry import ReadOnlyToolset
 
 
@@ -40,6 +41,11 @@ class GraphContext:
     # here rather than compiled into the graph. None on a turn that reaches no
     # agent -- the nodes that need it say so.
     toolset: ReadOnlyToolset | None = None
+    # What the deterministic booking nodes reach: the calendar behind its
+    # breaker, slot holds, in-flight dedup. Never handed to an agent. None
+    # where no calendar is wired in, and the booking branch then says it
+    # cannot book rather than failing.
+    booking: BookingDesk | None = None
     # How many times the agent may call tools before the turn gives up and
     # abstains. A cost ceiling and a loop guard in one number.
     max_tool_rounds: int = 3

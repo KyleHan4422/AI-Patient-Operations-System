@@ -7,11 +7,10 @@ could not answer. All of it in one transaction. Nothing else in the graph
 writes an assistant message.
 
 Three branches reach it and each has already been settled elsewhere: an answer
-checked against its evidence (verify_answer), a fixed sentence about bookings
-(booking_deferred, until Phase 6), or small talk from a model that was shown no
-clinic data at all. So this node passes the draft through and falls back to a
-fixed line when there is nothing -- which is the same shape it will keep when
-Phase 6's booking confirmation is filled from the verified appointment row.
+checked against its evidence (verify_answer), a booking step written by code --
+a confirmation filled from the appointment row verify_booking read back -- or
+small talk from a model that was shown no clinic data at all. So this node
+passes the draft through, and falls back to a fixed line when there is nothing.
 """
 
 from __future__ import annotations
@@ -35,7 +34,10 @@ async def respond(state: AgentState, runtime: Runtime[GraphContext]) -> dict[str
     gap = state.get("kb_gap")
     # The trace is read from the context, not from state: it is per-turn
     # evidence, and the checkpoint is the conversation's long-term memory.
-    trace = ctx.toolset.trace if ctx.toolset is not None else []
+    trace = [
+        *(ctx.toolset.trace if ctx.toolset is not None else []),
+        *(ctx.booking.trace if ctx.booking is not None else []),
+    ]
     degraded = ctx.degraded.modes
 
     await ctx.recorder.record_turn(
@@ -50,6 +52,7 @@ async def respond(state: AgentState, runtime: Runtime[GraphContext]) -> dict[str
                 "answer_kind": state.get("answer_kind"),
                 "citations": state.get("citations") or [],
                 "degraded_modes": degraded,
+                "appointment_id": state.get("appointment_id"),
             },
             tool_calls=tuple(
                 ToolCallRecord(

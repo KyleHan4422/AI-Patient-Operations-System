@@ -112,6 +112,13 @@ async def get_provider(session: AsyncSession, provider_id: int) -> Provider | No
     return await session.get(Provider, provider_id)
 
 
+async def get_providers(session: AsyncSession, provider_ids: Collection[int]) -> list[Provider]:
+    if not provider_ids:
+        return []
+    stmt = select(Provider).where(Provider.id.in_(provider_ids)).order_by(Provider.id)
+    return list((await session.scalars(stmt)).all())
+
+
 async def providers_for_specialty(session: AsyncSession, specialty: str) -> list[Provider]:
     stmt = select(Provider).where(Provider.specialty == specialty).order_by(Provider.id)
     return list((await session.scalars(stmt)).all())
