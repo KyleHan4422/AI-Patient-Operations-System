@@ -1,5 +1,26 @@
 # AI-Patient-Operations-System
 
+## Guardrails: two checks no model is asked to make
+
+| | G0 emergency filter | G5 booking policy |
+|---|---|---|
+| Where | The chat route, before anything else is resolved (`guardrails/emergency.py`) | `BookingDesk.book()`, before the calendar is called (`guardrails/booking_policy.py`) |
+| What | Keyword rules from `knowledge_base/dental-emergencies.md`: breathing or swallowing trouble, spreading swelling, bleeding that will not stop, face/jaw/head injury, chest pain, swelling with fever (-> call 911); a knocked-out tooth (-> call the clinic now) | Right length for the procedure, inside the provider's hours, not a closure, on the slot grid, at least the lead time ahead, within the horizon |
+| Answer | Fixed text with its source: no model, no graph | `INVALID`, which the booking path answers with fresh times |
+| Cannot be stopped by | The rate limit, a missing model or embedder, Redis being down, a failed transcript write (reported as `degraded: ["transcript"]`) | -- |
+| Leaves behind | Transcript row (`meta.guardrail = "G0"`), a checkpoint the next turn continues from, no open booking | A `tool_calls` row, `refused by G5: <rules>` |
+| Proven by | `evals/emergency/cases.yaml` (every positive must match; 50/50, 1/31 negatives flagged), `test_emergency_route.py` | `test_booking_policy.py`: every slot `compute_slots` generates passes, nudged ones do not |
+
+Both fail in the safe direction on purpose. G0 does not understand negation --
+"I'm not having trouble breathing" is told to call 911 -- because over-triage
+costs a sentence and a miss does not bear thinking about. G5 re-checks even
+what the booking path itself offered: a slot offered at exactly the lead time
+and confirmed five minutes later is refused and re-offered, not quietly booked.
+The one exception is a replay: a retried "yes" whose key already has a row is
+passed to the calendar, which returns that row -- refusing it would tell a
+booked patient they are not. Staff may book longer visits, off the grid and
+inside the lead time.
+
 ## Booking: what the model may do, and what only code does
 
 A patient books in chat: *book me a cleaning* -> phone number -> three offered

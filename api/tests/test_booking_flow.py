@@ -507,13 +507,27 @@ async def test_the_retry_asked_for_is_not_turned_into_a_stale_offer(chat, sessio
     chat.breaker = build_breaker(chat.coordinator, "calendar", failure_threshold=1, cooldown_s=30)
     await offer_cleanings(chat)
     chat.now = FIXED_NOW + timedelta(minutes=12)
-    await chat.say("the first one")
+    # Not the first one: Thu 10:00 was offered at exactly the lead time, so by
+    # 08:16 G5 refuses it -- test_a_slot_that_drifts_inside_the_lead_time_is_re_offered.
+    await chat.say("the second one")
     await chat.breaker.record(await chat.breaker.allow(), BreakerEvent.FAILURE)
     assert await chat.say("yes") == replies.CALENDAR_PAUSED
 
     chat.now = FIXED_NOW + timedelta(minutes=16)  # past OFFER_STALE_AFTER from the offer
     chat.breaker = build_breaker(chat.coordinator, "recovered", failure_threshold=1, cooldown_s=30)
     assert (await chat.say("yes")).startswith("You're booked")
+
+
+async def test_a_slot_that_drifts_inside_the_lead_time_is_re_offered(chat, session_factory):
+    """Offered at 08:00 for 10:00 -- exactly two hours ahead. Chosen, and
+    confirmed at 08:05: by then it is inside the lead time, and G5 says so
+    rather than the calendar quietly booking it."""
+    await offer_cleanings(chat)
+    await chat.say("the first one")
+    chat.now = FIXED_NOW + timedelta(minutes=5)
+    reply = await chat.say("yes")
+    assert reply.startswith(replies.SLOT_UNAVAILABLE)
+    assert await booked_count(session_factory) == 0
 
 
 async def test_an_unreadable_label_mid_booking_continues_the_booking(chat):

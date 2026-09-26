@@ -24,7 +24,7 @@ import hashlib
 import time as clock
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from typing import Any, TypeVar
 from zoneinfo import ZoneInfo
 
@@ -32,7 +32,9 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from patient_ops.adapters.calendar.base import Booking, BookingRequest, CalendarProvider, Slot
 from patient_ops.db import repo
-from patient_ops.errors import ToolError
+from patient_ops.domain.availability import SchedulingPolicy
+from patient_ops.errors import ErrorCode, ToolError
+from patient_ops.guardrails.booking_policy import ProposedVisit, violations
 from patient_ops.obs.logging import get_logger
 from patient_ops.redis_layer.holds import HoldResult, HoldStatus, SlotHolds
 from patient_ops.redis_layer.idempotency import InFlightDedup
@@ -95,6 +97,7 @@ class BookingDesk:
     dedup: InFlightDedup
     tz: ZoneInfo
     now: Callable[[], datetime] = _utc_now
+    policy: SchedulingPolicy = field(default_factory=SchedulingPolicy)
     trace: list[ToolInvocation] = field(default_factory=list)
     _catalogue: list[tuple[str, str]] | None = field(default=None, init=False, repr=False)
 
@@ -170,8 +173,13 @@ class BookingDesk:
 
         The dedup layer only saves a duplicate from making its own calendar
         call; the calendar's UNIQUE idempotency key is what guarantees one row.
+
+        G5 goes first: a request that breaks the booking policy is refused
+        before the calendar is called, as INVALID -- which the booking path
+        already answers by offering fresh times.
         """
         key = request.idempotency_key
+        await self._enforce_policy(request)
         return await self._traced(
             BOOK_APPOINTMENT,
             {
@@ -191,6 +199,53 @@ class BookingDesk:
                 + ("" if booking.created else " (already written)")
             ),
         )
+
+    async def _enforce_policy(self, request: BookingRequest) -> None:
+        """Raise ToolError(INVALID) if the request breaks G5.
+
+        Except for a replay. A "yes" retried after a timeout carries the same
+        key as a write that may already have happened -- and the clock has
+        moved on since, so a slot that was two hours away may now be ninety
+        minutes away. Refusing that would tell a patient who is booked that
+        they are not. So a request that fails the policy is first looked up by
+        its key; if the row exists, the calendar replays it.
+        """
+        started = clock.perf_counter()
+        local_day = request.start_at.astimezone(self.tz).date()
+        async with self.session_factory() as session:
+            procedure = await repo.get_procedure(session, request.procedure_code)
+            if procedure is None:
+                return  # the calendar refuses an unknown procedure itself
+            schedules = await repo.schedules_for(session, [request.provider_id])
+            closures = await repo.closures_between(session, local_day, local_day)
+        broken = violations(
+            ProposedVisit(
+                provider_id=request.provider_id,
+                start_at=request.start_at,
+                end_at=request.end_at,
+                duration=timedelta(minutes=procedure.duration_min),
+                source=request.source,
+            ),
+            schedules=schedules,
+            closures=closures,
+            tz=self.tz,
+            now=self.now(),
+            policy=self.policy,
+        )
+        if not broken:
+            return
+        if await self.calendar.get_booking(idempotency_key=request.idempotency_key) is not None:
+            log.info("booking_policy_replay", key=request.idempotency_key, violations=broken)
+            return
+        rules = ",".join(broken)
+        self._record(
+            BOOK_APPOINTMENT,
+            {"idempotency_key": request.idempotency_key, "procedure": request.procedure_code},
+            started,
+            f"refused by G5: {rules}",
+        )
+        log.warning("booking_policy_refused", key=request.idempotency_key, violations=broken)
+        raise ToolError(ErrorCode.INVALID, f"booking policy: {rules}", cause=f"G5:{rules}")
 
     # -- the one place a call is timed, traced and logged ----------------------
     async def _traced(

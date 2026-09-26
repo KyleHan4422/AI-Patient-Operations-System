@@ -11,6 +11,7 @@ exactly:
     event: stage   {"intent"}                         once, when the branch is known
     event: token   {"text"}                           zero or more; provisional
     event: done    {"text", "thread_id", "degraded"}  success; `text` is authoritative
+                   (+ "guardrail": {"id", "category"} when a guardrail answered)
       -- or --
     event: error   {"code", "message", "request_id"}  failure; `code` is an ErrorCode
 
@@ -29,6 +30,12 @@ silent one.
 Errors found before the stream starts get a real status code (422 bad input,
 429 too many turns, 503 no model configured). Once the 200 has been sent it cannot be taken back,
 so a failure mid-turn is an `error` event.
+
+Except for an emergency. G0 (guardrails/emergency.py) reads the message before
+anything else is resolved; when it matches, the rate limit, the model and the
+tools are not consulted at all, and the reply is fixed text: stage
+`emergency`, then `done` with `guardrail`. A patient whose face is swelling
+toward their eye is not told "too many messages", or "no model configured".
 
 This module translates and nothing more; what a turn *is* lives in graph/turn.py,
 so the voice channel (Phase 13) can reuse it.
@@ -55,9 +62,11 @@ from patient_ops.adapters.llm.client import classify_llm_error
 from patient_ops.adapters.llm.embeddings import embedding_model_name, min_score_for
 from patient_ops.db import repo
 from patient_ops.degradation import DegradedModes
+from patient_ops.domain.availability import SchedulingPolicy
 from patient_ops.errors import ErrorCode, ToolError
 from patient_ops.graph.context import GraphContext
-from patient_ops.graph.turn import Stage, Token, run_turn
+from patient_ops.graph.turn import Final, Stage, Token, emergency_turn, run_turn
+from patient_ops.guardrails.emergency import EmergencyMatch, screen
 from patient_ops.obs.logging import get_logger
 from patient_ops.redis_layer.holds import SlotHolds
 from patient_ops.redis_layer.idempotency import InFlightDedup
@@ -85,6 +94,9 @@ class TranscriptEntry(BaseModel):
     role: Literal["user", "assistant"]
     content: str
     created_at: datetime
+    # "G0" on a reply a guardrail gave instead of the graph, so a reloaded
+    # conversation shows it as it was first shown.
+    guardrail: str | None = None
 
 
 # What the user sees. The code, the request id and the exception go to the log.
@@ -122,8 +134,19 @@ def classify_turn_error(exc: BaseException) -> ErrorCode:
     return ErrorCode.UNKNOWN
 
 
-def require_chat_model(request: Request) -> BaseChatModel:
+def screen_emergency(body: TurnRequest) -> EmergencyMatch | None:
+    """G0, first. Every other dependency of a turn takes this one and stands
+    aside when it matched, so nothing that can fail runs ahead of it."""
+    return screen(body.message)
+
+
+Emergency = Annotated[EmergencyMatch | None, Depends(screen_emergency)]
+
+
+def require_chat_model(request: Request, emergency: Emergency) -> BaseChatModel | None:
     """Resolved before the stream opens, so "not configured" is a real 503."""
+    if emergency is not None:
+        return None
     model: BaseChatModel | None = request.app.state.chat_model
     if model is None:
         raise HTTPException(
@@ -145,15 +168,21 @@ def turn_degradation() -> DegradedModes:
 
 
 async def enforce_rate_limit(
-    request: Request, degraded: Annotated[DegradedModes, Depends(turn_degradation)]
+    request: Request,
+    degraded: Annotated[DegradedModes, Depends(turn_degradation)],
+    emergency: Emergency,
 ) -> None:
     """R5: a token bucket per client, checked before the stream opens -- so a
     client over its budget gets a real 429 and a Retry-After, and no model is
     called on its behalf. Fails open: with Redis down the turn goes ahead and
     records `rate_limit` among its degraded modes.
+
+    An emergency is neither limited nor counted: it costs no model call, and
+    someone who has just sent twenty panicked messages is the last person to
+    tell to wait.
     """
     settings = request.app.state.settings
-    if not settings.rate_limit_enabled:
+    if not settings.rate_limit_enabled or emergency is not None:
         return
     # The socket peer. Behind a reverse proxy this is the proxy, and the key
     # must come from the X-Forwarded-For entry the proxy itself appended --
@@ -172,13 +201,15 @@ async def enforce_rate_limit(
         )
 
 
-def require_toolset(request: Request) -> ReadOnlyToolset:
+def require_toolset(request: Request, emergency: Emergency) -> ReadOnlyToolset | None:
     """The turn's read-only tools, built fresh: it records what this turn used.
 
     Resolved before the stream opens, like the model, so an embedder that is
     not configured and a model with no calibrated threshold are both a 503 with
     a reason -- not an error event three seconds into an answer.
     """
+    if emergency is not None:
+        return None
     state = request.app.state
     settings = state.settings
     if state.embeddings is None:
@@ -208,8 +239,10 @@ def require_toolset(request: Request) -> ReadOnlyToolset:
 
 
 def booking_desk(
-    request: Request, degraded: Annotated[DegradedModes, Depends(turn_degradation)]
-) -> BookingDesk:
+    request: Request,
+    degraded: Annotated[DegradedModes, Depends(turn_degradation)],
+    emergency: Emergency,
+) -> BookingDesk | None:
     """What the booking path may reach this turn, and nothing an agent can.
 
     Built per turn around long-lived parts: the breaker and the Redis
@@ -217,6 +250,8 @@ def booking_desk(
     the dedup carry this turn's DegradedModes, so a fallback taken anywhere on
     the booking path shows up in this turn's `done.degraded`.
     """
+    if emergency is not None:
+        return None
     state = request.app.state
     settings = state.settings
     return BookingDesk(
@@ -241,6 +276,11 @@ def booking_desk(
             degraded=degraded,
         ),
         tz=settings.clinic_tz,
+        policy=SchedulingPolicy(
+            step=timedelta(minutes=settings.slot_step_min),
+            min_lead=timedelta(minutes=settings.booking_min_lead_min),
+            max_horizon=timedelta(days=settings.booking_max_horizon_days),
+        ),
     )
 
 
@@ -251,9 +291,10 @@ async def turn(
     body: TurnRequest,
     request: Request,
     degraded: Annotated[DegradedModes, Depends(turn_degradation)],
-    chat_model: Annotated[BaseChatModel, Depends(require_chat_model)],
-    toolset: Annotated[ReadOnlyToolset, Depends(require_toolset)],
-    booking: Annotated[BookingDesk, Depends(booking_desk)],
+    emergency: Emergency,
+    chat_model: Annotated[BaseChatModel | None, Depends(require_chat_model)],
+    toolset: Annotated[ReadOnlyToolset | None, Depends(require_toolset)],
+    booking: Annotated[BookingDesk | None, Depends(booking_desk)],
 ) -> AsyncIterator[ServerSentEvent]:
     state = request.app.state
     thread_id = body.thread_id or uuid.uuid4()
@@ -262,9 +303,26 @@ async def turn(
 
     yield ServerSentEvent(event="meta", data={"thread_id": thread_id, "request_id": request_id})
 
-    # Phase 7: the G0 emergency filter goes here -- before any model sees the
-    # message, so an emergency never depends on a classifier.
+    if emergency is not None:
+        # G0 matched before any model saw the message: fixed text, no graph.
+        events = emergency_turn(
+            state.graph,
+            state.transcript,
+            match=emergency,
+            text=body.message,
+            thread_id=thread_id,
+            channel=body.channel,
+            request_id=request_id,
+            clinic_phone=state.settings.clinic_phone,
+        )
+        async for event in events:
+            if isinstance(event, Stage):
+                yield ServerSentEvent(event="stage", data={"intent": event.intent})
+            else:
+                yield _done(event, thread_id)
+        return
 
+    assert chat_model is not None and toolset is not None, "resolved when G0 did not match"
     context = GraphContext(
         thread_id=thread_id,
         request_id=request_id,
@@ -290,14 +348,7 @@ async def turn(
                     latency_ms=round((time.perf_counter() - started) * 1000),
                     degraded=list(event.degraded),
                 )
-                yield ServerSentEvent(
-                    event="done",
-                    data={
-                        "text": event.text,
-                        "thread_id": thread_id,
-                        "degraded": list(event.degraded),
-                    },
-                )
+                yield _done(event, thread_id)
     except Exception as exc:
         # Not BaseException: a client disconnect cancels the turn, and that
         # cancellation must propagate rather than be answered.
@@ -309,6 +360,13 @@ async def turn(
         )
 
 
+def _done(event: Final, thread_id: uuid.UUID) -> ServerSentEvent:
+    data: dict = {"text": event.text, "thread_id": thread_id, "degraded": list(event.degraded)}
+    if event.guardrail is not None:
+        data["guardrail"] = event.guardrail
+    return ServerSentEvent(event="done", data=data)
+
+
 @router.get("/threads/{thread_id}/messages", response_model=list[TranscriptEntry])
 async def thread_messages(thread_id: uuid.UUID, request: Request) -> list[TranscriptEntry]:
     async with request.app.state.session_factory() as session:
@@ -316,6 +374,11 @@ async def thread_messages(thread_id: uuid.UUID, request: Request) -> list[Transc
     if messages is None:
         raise HTTPException(status_code=404, detail="No conversation with this thread_id.")
     return [
-        TranscriptEntry(role=m.role, content=m.content, created_at=m.created_at)  # type: ignore[arg-type]
+        TranscriptEntry(
+            role=m.role,  # type: ignore[arg-type]
+            content=m.content,
+            created_at=m.created_at,
+            guardrail=(m.meta or {}).get("guardrail") if m.role == "assistant" else None,
+        )
         for m in messages
     ]

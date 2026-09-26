@@ -20,7 +20,12 @@ const STAGE_LABELS: Record<string, string> = {
   knowledge: "Looking that up in the clinic's records…",
   booking: "One moment…",
   smalltalk: "…",
+  emergency: "…",
 };
+
+// 911 and the clinic's number in an emergency reply become tel: links, so a
+// patient on a phone is one tap from calling.
+const PHONE_NUMBER = /(\b911\b|\(\d{3}\) \d{3}-\d{4})/;
 
 export function Chat() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -85,10 +90,13 @@ export function Chat() {
       },
       onStage: (intent) => setStage(intent),
       onToken: (token) => setStreaming((s) => (s ?? "") + token),
-      onDone: (final) => {
+      onDone: (final, guardrail) => {
         setStreaming(null);
         setStage(null);
-        setMessages((m) => [...m, { role: "assistant", content: final }]);
+        setMessages((m) => [
+          ...m,
+          { role: "assistant", content: final, ...(guardrail ? { guardrail } : {}) },
+        ]);
       },
       onError: (turnError) => {
         setStreaming(null);
@@ -143,7 +151,12 @@ export function Chat() {
           </p>
         )}
         {messages.map((message, i) => (
-          <Bubble key={i} role={message.role} text={message.content} />
+          <Bubble
+            key={i}
+            role={message.role}
+            text={message.content}
+            emergency={message.guardrail === "G0"}
+          />
         ))}
         {streaming !== null && (
           <Bubble
@@ -197,17 +210,50 @@ export function Chat() {
   );
 }
 
-function Bubble({ role, text, pending = false }: { role: string; text: string; pending?: boolean }) {
+function Bubble({
+  role,
+  text,
+  pending = false,
+  emergency = false,
+}: {
+  role: string;
+  text: string;
+  pending?: boolean;
+  emergency?: boolean;
+}) {
   const mine = role === "user";
+  const tone = mine
+    ? "bg-sky-600 text-white"
+    : emergency
+      ? "border border-rose-500/60 bg-rose-950/60 text-rose-50"
+      : "bg-zinc-800 text-zinc-100";
   return (
     <div className={`flex ${mine ? "justify-end" : "justify-start"}`}>
       <div
-        className={`max-w-[85%] whitespace-pre-wrap break-words rounded-2xl px-3.5 py-2 text-sm leading-relaxed ${
-          mine ? "bg-sky-600 text-white" : "bg-zinc-800 text-zinc-100"
-        } ${pending ? "opacity-80" : ""}`}
+        role={emergency ? "alert" : undefined}
+        className={`max-w-[85%] whitespace-pre-wrap break-words rounded-2xl px-3.5 py-2 text-sm leading-relaxed ${tone} ${
+          pending ? "opacity-80" : ""
+        }`}
       >
-        {text}
+        {emergency ? <Linked text={text} /> : text}
       </div>
     </div>
+  );
+}
+
+function Linked({ text }: { text: string }) {
+  // split() with a capturing group keeps the numbers, at the odd indices.
+  return text.split(PHONE_NUMBER).map((part, i) =>
+    i % 2 === 1 ? (
+      <a
+        key={i}
+        href={`tel:${part.replace(/\D/g, "")}`}
+        className="font-semibold underline underline-offset-2"
+      >
+        {part}
+      </a>
+    ) : (
+      part
+    ),
   );
 }

@@ -5,6 +5,10 @@
  *   meta -> stage -> token* -> done     (success)
  *   meta -> stage -> token* -> error    (failure after the stream started)
  *
+ * An emergency (guardrail G0) is answered before anything else runs: stage
+ * "emergency", then a done that carries `guardrail`. It is never refused with
+ * a 429 or a 503, so the client need not special-case those for it.
+ *
  * Most replies carry no tokens at all. An answer about the clinic is checked
  * against the passages it cites before it is said, so it arrives whole, in
  * `done`; `stage` is what the client shows meanwhile.
@@ -17,16 +21,17 @@ import { API_BASE_URL } from "@/lib/health";
 import { readSse } from "@/lib/sse";
 
 export type Role = "user" | "assistant";
-export type ChatMessage = { role: Role; content: string };
+/** `guardrail` is "G0" on a fixed emergency reply, shown differently. */
+export type ChatMessage = { role: Role; content: string; guardrail?: string };
 
 export type TurnError = { code: string; message: string; requestId: string };
 
 export type TurnHandlers = {
   onMeta: (threadId: string) => void;
-  /** Which branch the turn took: "knowledge", "booking" or "smalltalk". */
+  /** Which branch the turn took: "knowledge", "booking", "smalltalk" or "emergency". */
   onStage: (intent: string) => void;
   onToken: (text: string) => void;
-  onDone: (text: string) => void;
+  onDone: (text: string, guardrail?: string) => void;
   onError: (error: TurnError) => void;
 };
 
@@ -74,7 +79,7 @@ export async function streamTurn(
       else if (event === "token") handlers.onToken(payload.text);
       else if (event === "done") {
         finished = true;
-        handlers.onDone(payload.text);
+        handlers.onDone(payload.text, payload.guardrail?.id);
       } else if (event === "error") {
         finished = true;
         handlers.onError({
@@ -104,8 +109,13 @@ export async function fetchHistory(threadId: string): Promise<ChatMessage[] | nu
   );
   if (response.status === 404) return null;
   if (!response.ok) throw new Error(`history request failed (HTTP ${response.status})`);
-  const rows: { role: Role; content: string }[] = await response.json();
-  return rows.map(({ role, content }) => ({ role, content }));
+  const rows: { role: Role; content: string; guardrail: string | null }[] =
+    await response.json();
+  return rows.map(({ role, content, guardrail }) => ({
+    role,
+    content,
+    ...(guardrail ? { guardrail } : {}),
+  }));
 }
 
 // The thread id is kept in localStorage so a page reload resumes the same

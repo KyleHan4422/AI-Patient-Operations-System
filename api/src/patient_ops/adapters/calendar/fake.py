@@ -142,8 +142,9 @@ class FakeCalendar(CalendarProvider):
                 # Like a real backend, it does not trust the caller: the
                 # provider must perform the procedure, and the time must be
                 # inside their working hours. (Whether the length matches the
-                # procedure's duration is booking policy -- guardrail G5,
-                # Phase 7 -- since staff may legitimately book a longer visit.)
+                # procedure's duration is booking policy -- guardrail G5, in
+                # guardrails/booking_policy.py -- since staff may legitimately
+                # book a longer visit.)
                 procedure = await repo.get_procedure(session, req.procedure_code)
                 provider = await repo.get_provider(session, req.provider_id)
                 if procedure is None or provider is None:

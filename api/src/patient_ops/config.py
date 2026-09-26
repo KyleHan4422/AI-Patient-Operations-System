@@ -83,6 +83,9 @@ class Settings(BaseSettings):
     slot_step_min: int = Field(default=30, gt=0, le=240)
     booking_min_lead_min: int = Field(default=120, ge=0)
     booking_max_horizon_days: int = Field(default=180, gt=0)
+    # The number an emergency reply (guardrail G0) tells the patient to call.
+    # 555-01xx is reserved for fictional use, like the seed data's numbers.
+    clinic_phone: str = Field(default="(212) 555-0199", min_length=1)
 
     # --- Fault injection: dev and test only -----------------------------------
     # e.g. "book_appointment:timeout@1". Parsed at boot; refused in prod.

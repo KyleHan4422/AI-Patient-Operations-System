@@ -6,17 +6,32 @@ turn them into speech. Neither re-implements what a turn is.
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
 
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.runnables import RunnableConfig
 from langgraph.graph.state import CompiledStateGraph
 
+from patient_ops.db.transcript import TurnRecord
 from patient_ops.graph.build import USER_FACING_NODES
-from patient_ops.graph.context import GraphContext
+from patient_ops.graph.context import GraphContext, TurnRecorder
+from patient_ops.guardrails.emergency import EmergencyMatch
+from patient_ops.guardrails.emergency import reply as emergency_reply
+from patient_ops.obs.logging import get_logger
+
+log = get_logger(__name__)
+
+# An emergency reply waits this long, at most, for each of its two writes. The
+# writes are how staff see what happened; the reply is what the patient needs.
+# With Postgres down, the patient is told to call 911 two seconds late rather
+# than not at all.
+EMERGENCY_WRITE_TIMEOUT_S = 2.0
+# The degraded mode reported when an emergency reply could not be written down.
+UNRECORDED = "transcript"
 
 
 @dataclass(frozen=True)
@@ -47,6 +62,9 @@ class Final:
     text: str
     # Fallbacks the turn took. Not an error: the reply is still the reply.
     degraded: tuple[str, ...] = ()
+    # Set when a guardrail answered instead of the graph: {"id": "G0",
+    # "category": "er"}. A client shows such a reply differently.
+    guardrail: dict[str, str] | None = None
 
 
 def turn_input(text: str) -> dict[str, Any]:
@@ -104,3 +122,73 @@ async def run_turn(
     # After the loop, not when respond's update arrives: an acknowledgement
     # sent before the save would be a promise the system might not keep.
     yield Final(final, tuple(degraded))
+
+
+async def emergency_turn(
+    graph: CompiledStateGraph,
+    recorder: TurnRecorder,
+    *,
+    match: EmergencyMatch,
+    text: str,
+    thread_id: uuid.UUID,
+    channel: Literal["web", "voice"],
+    request_id: str,
+    clinic_phone: str,
+) -> AsyncIterator[Stage | Final]:
+    """A turn G0 answered. No model is called and the graph does not run.
+
+    Written down twice, as a graph turn would be: into the transcript, so
+    staff see it, and into the checkpoint, so the conversation's next turn
+    knows the patient reported an emergency and was told where to go. Each
+    write is bounded and best effort -- a failure is logged and reported as
+    degraded, and the reply goes out regardless.
+
+    The checkpoint write also ends any booking in progress. The last thing
+    the patient was told is to go to the emergency room, not "Shall I book
+    it?", so a "yes" on the next turn must not write an appointment. Its
+    holds expire by themselves.
+    """
+    yield Stage("emergency")
+    final = emergency_reply(match, clinic_phone)
+    guardrail = {"id": "G0", "category": match.category}
+    log.warning("emergency_triggered", category=match.category, rule=match.rule_id)
+
+    degraded: list[str] = []
+    record = TurnRecord(
+        thread_id=thread_id,
+        channel=channel,
+        user_text=text,
+        assistant_text=final,
+        meta={
+            "request_id": request_id,
+            "intent": "emergency",
+            "answer_kind": "emergency",
+            "guardrail": "G0",
+            "category": match.category,
+            "rule": match.rule_id,
+        },
+    )
+    update = turn_input(text) | {
+        "messages": [HumanMessage(text), AIMessage(final)],
+        "intent": "emergency",
+        "answer_kind": "emergency",
+        "final_response": final,
+        "degraded_modes": [],
+        "booking": None,
+    }
+    for name, write in (
+        ("transcript", lambda: recorder.record_turn(record)),
+        # As `respond`: the turn is over, and the next one starts from START.
+        (
+            "checkpoint",
+            lambda: graph.aupdate_state(turn_config(thread_id), update, as_node="respond"),
+        ),
+    ):
+        try:
+            await asyncio.wait_for(write(), EMERGENCY_WRITE_TIMEOUT_S)
+        except Exception as exc:
+            # Not BaseException: a client disconnect must still cancel.
+            log.error("emergency_unrecorded", write=name, error_type=type(exc).__name__)
+            if UNRECORDED not in degraded:
+                degraded.append(UNRECORDED)
+    yield Final(final, tuple(degraded), guardrail)

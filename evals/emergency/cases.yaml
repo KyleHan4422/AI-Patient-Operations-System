@@ -1,0 +1,115 @@
+# Labelled messages for G0, the emergency filter (api/src/patient_ops/guardrails/emergency.py).
+#
+# api/tests/test_emergency.py checks every one:
+#
+#   positives   must be caught, as the category given. Any miss fails CI:
+#               this is the list of things the filter promises to catch.
+#   negatives   ordinary questions a dental clinic gets, several of them
+#               sharing words with an emergency ("bad breath", "sensitive to
+#               temperature", "bleeding gums"). A match here is a false
+#               positive: measured and printed, not gated, because over-triage
+#               is the failure this filter chooses. `known_false_positive`
+#               marks the ones it knowingly gets wrong, so a new one stands out.
+#
+# Positives are written the way patients write -- lower case, typos, no
+# punctuation, the emergency buried mid-sentence -- not the way the document
+# words it. A filter tested only on the document's own phrases tests nothing.
+
+positives:
+  # --- er: breathing ---------------------------------------------------------
+  - {text: "I can't breathe properly, my face is swollen", category: er}
+  - {text: "cant breath", category: er}
+  - {text: "I CAN NOT BREATHE", category: er}
+  - {text: "it's getting hard to breathe since this morning", category: er}
+  - {text: "my husband is having trouble breathing after his extraction", category: er}
+  - {text: "short of breath and my jaw hurts", category: er}
+  - {text: "i feel like my throat is closing", category: er}
+  - {text: "my son is choking on a piece of his retainer", category: er}
+  - {text: "difficulty breathing", category: er}
+  # --- er: swallowing ----------------------------------------------------------
+  - {text: "I can't swallow anything, even water", category: er}
+  - {text: "it's really hard to swallow and my gum is swollen", category: er}
+  - {text: "Having trouble swallowing since the root canal", category: er}
+  # --- er: spreading swelling --------------------------------------------------
+  - {text: "the swelling is spreading up toward my eye", category: er}
+  - {text: "my cheek is swollen all the way to my eye", category: er}
+  - {text: "Swelling going down my neck from the wisdom tooth", category: er}
+  - {text: "my eye is almost swollen shut", category: er}
+  - {text: "the area under my tongue is swollen and hard", category: er}
+  - {text: "my neck looks puffy on the left side", category: er}
+  # --- er: swelling with fever ------------------------------------------------
+  - {text: "I have a fever and my face is swollen", category: er}
+  - {text: "swollen jaw, running a temperature of 101", category: er}
+  - {text: "my gum is swelling and I've got chills", category: er}
+  # --- er: bleeding -------------------------------------------------------------
+  - {text: "the bleeding won't stop after my tooth was pulled", category: er}
+  - {text: "it's been bleeding for 3 hours and it wont stop", category: er}
+  - {text: "I can't stop the bleeding from the socket", category: er}
+  - {text: "bleeding heavily from my mouth", category: er}
+  - {text: "there is so much blood, what do I do", category: er}
+  - {text: "extraction site hasn't stopped bleeding even with gauze", category: er}
+  # --- er: face, jaw or head injury ------------------------------------------
+  - {text: "I think I broke my jaw", category: er}
+  - {text: "my jaw is dislocated and I can't close my mouth", category: er}
+  - {text: "fell off my bike and hit my head, now my teeth feel loose", category: er}
+  - {text: "he was knocked out for a few seconds", category: er}
+  - {text: "she passed out in the chair", category: er}
+  - {text: "we were in a car accident and her face is hurt", category: er}
+  - {text: "lost consciousness after falling", category: er}
+  # --- er: chest pain -----------------------------------------------------------
+  - {text: "I have chest pain and my jaw aches", category: er}
+  - {text: "pain in my chest spreading to my left arm", category: er}
+  - {text: "my chest feels tight and I'm sweating", category: er}
+  - {text: "is jaw pain a sign of a heart attack? I'm having it now", category: er}
+  # --- er beats urgent_dental when both are present ---------------------------
+  - {text: "knocked out a tooth and hit my head", category: er}
+  # --- urgent_dental: knocked-out tooth ----------------------------------------
+  - {text: "my son knocked his front tooth out at football", category: urgent_dental}
+  - {text: "I knocked out a tooth", category: urgent_dental}
+  - {text: "my tooth got knocked out, what do I do", category: urgent_dental}
+  - {text: "tooth fell out after I got hit with a ball", category: urgent_dental}
+  - {text: "her front tooth came out completely when she fell", category: urgent_dental}
+  - {text: "lost a tooth playing hockey", category: urgent_dental}
+  - {text: "avulsed incisor", category: urgent_dental}
+  # --- normalisation: curly quotes, full-width letters, punctuation ----------
+  - {text: "I can’t breathe", category: er}
+  - {text: "ｃａｎｔ ｂｒｅａｔｈｅ", category: er}
+  - {text: "can't... breathe!!", category: er}
+  # --- negation is not handled, on purpose ------------------------------------
+  - {text: "I'm not having trouble breathing, just a toothache", category: er}
+
+negatives:
+  - text: "What are your opening hours on Saturday?"
+  - text: "How much is a cleaning without insurance?"
+  - text: "Do you take Delta Dental PPO?"
+  - text: "Please book me a cleaning"
+  - text: "the second one"
+  - text: "yes"
+  - text: "(212) 555-0101"
+  - text: "I have a toothache that wakes me up at night"
+  - text: "my tooth is sensitive to temperature and my gum looks a bit swollen"
+  - text: "My gums bleed a little when I floss"
+  - text: "Is it normal for a bit of bleeding after a cleaning?"
+  - text: "What can I do about bad breath?"
+  - text: "I don't want bad breath after my implant"
+  - text: "problems with bad breath"
+  - text: "I lost a filling"
+  - text: "My crown came off while eating"
+  - text: "I chipped my tooth on a popcorn kernel"
+  - text: "cracked tooth, hurts when I bite"
+  - text: "how long does swelling last after a wisdom tooth extraction?"
+  - text: "What is your after-hours emergency phone number?"
+  - text: "What counts as a dental emergency?"
+  - text: "Do you see children?"
+  - text: "can I cancel my appointment tomorrow"
+  - text: "I have a slight ache on the left side"
+  - text: "my jaw clicks when I chew"
+  - text: "can I bring my own headphones"
+  - text: "whitening options?"
+  - text: "the temporary crown feels loose"
+  - text: "I'm nervous about the needle"
+  - text: "Can I eat before my appointment?"
+  # Knowingly caught. A baby tooth falling out on its own is normal; the reply
+  # says baby teeth are not replanted and to call, which costs a sentence.
+  - text: "my daughter's baby tooth fell out, is that okay?"
+    known_false_positive: true
