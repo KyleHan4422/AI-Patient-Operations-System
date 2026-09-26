@@ -8,12 +8,15 @@ the next turn continues from, and no booking still waiting for a "yes".
 
 from __future__ import annotations
 
+import asyncio
+import time
 import uuid
 
 from langgraph.checkpoint.memory import InMemorySaver
 from pydantic import SecretStr
 
 from patient_ops.db.transcript import TurnRecord
+from patient_ops.graph import turn as turn_module
 from patient_ops.graph.build import build_graph
 from patient_ops.graph.turn import UNRECORDED, Final, Stage, emergency_turn, turn_config
 from patient_ops.guardrails.emergency import screen
@@ -77,7 +80,29 @@ async def test_an_emergency_is_answered_with_redis_down(degraded_settings):  # n
     async with running_app(degraded_settings, TimingOutModel()) as client:
         events = await say(client, EMERGENCY)
     assert_emergency_stream(events)
-    assert events[-1].data["degraded"] == [], "the rate limiter was never asked"
+    # Its write budget failed open, as R5 does, and says so; the turn itself
+    # was never refused or limited.
+    assert events[-1].data["degraded"] == ["rate_limit"]
+
+
+async def test_past_the_write_budget_an_emergency_is_answered_but_not_recorded(
+    limited_settings,  # noqa: F811
+):
+    """Found in the Phase 7 audit: an emergency skips R5, so "can't breathe" in
+    every message was unlimited writes. Now the reply is unconditional and
+    the writing is budgeted."""
+    settings = limited_settings.model_copy(update={"emergency_record_capacity": 2})
+    async with running_app(settings, TimingOutModel()) as client:
+        streams = [await say(client, EMERGENCY) for _ in range(3)]
+        recorded = [
+            (await client.get(f"/api/chat/threads/{s[0].data['thread_id']}/messages")).status_code
+            for s in streams
+        ]
+
+    for events in streams:
+        assert_emergency_stream(events)
+    assert [s[-1].data["degraded"] for s in streams] == [[], [], [UNRECORDED]]
+    assert recorded == [200, 200, 404]
 
 
 async def test_the_next_turn_remembers_the_emergency(chat_settings):  # noqa: F811
@@ -126,6 +151,25 @@ async def test_a_failed_write_still_answers_and_says_it_was_not_recorded():
     assert isinstance(final, Final)
     assert "911" in final.text
     assert final.degraded == (UNRECORDED,)
+
+
+class HangingRecorder:
+    async def record_turn(self, turn: TurnRecord) -> None:
+        await asyncio.sleep(60)
+
+
+async def test_both_writes_share_one_time_budget(monkeypatch):
+    """Not one budget each: a hanging database delays the reply by the budget
+    once, and the reply still goes out."""
+    monkeypatch.setattr(turn_module, "EMERGENCY_WRITE_TIMEOUT_S", 0.2)
+    graph = build_graph(InMemorySaver())
+    started = time.perf_counter()
+    events = await _run(graph, HangingRecorder(), EMERGENCY, uuid.uuid4())
+    elapsed = time.perf_counter() - started
+
+    final = events[-1]
+    assert isinstance(final, Final) and final.degraded == (UNRECORDED,)
+    assert elapsed < 0.4
 
 
 async def test_the_reply_and_the_record_agree():

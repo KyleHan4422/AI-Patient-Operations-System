@@ -5,11 +5,11 @@
 | | G0 emergency filter | G5 booking policy |
 |---|---|---|
 | Where | The chat route, before anything else is resolved (`guardrails/emergency.py`) | `BookingDesk.book()`, before the calendar is called (`guardrails/booking_policy.py`) |
-| What | Keyword rules from `knowledge_base/dental-emergencies.md`: breathing or swallowing trouble, spreading swelling, bleeding that will not stop, face/jaw/head injury, chest pain, swelling with fever (-> call 911); a knocked-out tooth (-> call the clinic now) | Right length for the procedure, inside the provider's hours, not a closure, on the slot grid, at least the lead time ahead, within the horizon |
+| What | Vocabulary rules from `knowledge_base/dental-emergencies.md`, words in either order: breathing or swallowing trouble, spreading or airway swelling, allergic reaction, bleeding that will not stop, face/jaw/head injury or fainting, chest pain, swelling with fever (-> call 911); a knocked-out tooth (-> call the clinic now) | Right length for the procedure, inside the provider's hours, not a closure, on the slot grid, at least the lead time ahead, within the horizon |
 | Answer | Fixed text with its source: no model, no graph | `INVALID`, which the booking path answers with fresh times |
-| Cannot be stopped by | The rate limit, a missing model or embedder, Redis being down, a failed transcript write (reported as `degraded: ["transcript"]`) | -- |
-| Leaves behind | Transcript row (`meta.guardrail = "G0"`), a checkpoint the next turn continues from, no open booking | A `tool_calls` row, `refused by G5: <rules>` |
-| Proven by | `evals/emergency/cases.yaml` (every positive must match; 50/50, 1/31 negatives flagged), `test_emergency_route.py` | `test_booking_policy.py`: every slot `compute_slots` generates passes, nudged ones do not |
+| Cannot be stopped by | The rate limit, a missing model or embedder, Redis being down, a slow or failed transcript write (both writes share one 2 s budget; reported as `degraded: ["transcript"]`) | A database it cannot read: that is `TRANSIENT`, said as "the calendar did not answer" with the time kept for a retry |
+| Leaves behind | Transcript row (`meta.guardrail = "G0"`), a checkpoint the next turn continues from, no open booking -- within a write budget of its own (10 per client, one more per 10 s), past which the reply still goes out unrecorded, so an emergency keyword is not a way around R5 into the database | A `tool_calls` row, `error: invalid (G5:<rules>)` |
+| Proven by | `evals/emergency/holdout.yaml`, never used to write a rule: **31/31 recalled, 0/15 negatives flagged**. `cases.yaml`, the development set: 80/80, 4/49 negatives flagged (all labelled known false positives). `test_emergency_route.py` | `test_booking_policy.py`: every slot `compute_slots` generates passes, nudged ones do not |
 
 Both fail in the safe direction on purpose. G0 does not understand negation --
 "I'm not having trouble breathing" is told to call 911 -- because over-triage
@@ -20,6 +20,23 @@ The one exception is a replay: a retried "yes" whose key already has a row is
 passed to the calendar, which returns that row -- refusing it would tell a
 booked patient they are not. Staff may book longer visits, off the grid and
 inside the lead time.
+
+G0's numbers deserve a caveat. Its first version spelled out phrases and
+scored 50/50 on the set written alongside it -- and 12/29 on phrasings written
+afterwards. The rules now match each emergency's vocabulary in either order,
+and the holdout exists so that a number like that cannot happen silently
+again. But the holdout was written by the rules' author; a clinician's list is
+the next test it needs. Known limits:
+
+- One message at a time: "my face is swollen", then "now it's reaching my eye"
+  in the next message, is not caught. The knowledge branch, which can quote
+  the emergencies document, is the backstop.
+- English only, like the knowledge base.
+- A message over 2,000 characters is refused (422) before G0 reads it. The web
+  client cannot send one.
+- If the checkpoint write fails, a booking in progress stays open.
+- Not a crisis line: self-harm is not in the dental emergencies document, and
+  is not covered.
 
 ## Booking: what the model may do, and what only code does
 

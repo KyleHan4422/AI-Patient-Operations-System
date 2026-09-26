@@ -78,6 +78,40 @@ positives:
   # --- negation is not handled, on purpose ------------------------------------
   - {text: "I'm not having trouble breathing, just a toothache", category: er}
 
+  # --- added in the Phase 7 audit: phrasings the first rules missed ---------
+  # The first version matched phrases; these are why the rules now match
+  # vocabulary in either order (see the comment above RULES).
+  - {text: "I can hardly breathe", category: er}
+  - {text: "breathing is really difficult right now", category: er}
+  - {text: "it hurts to breathe", category: er}
+  - {text: "I'm wheezing", category: er}
+  - {text: "cant catch my breath", category: er}
+  - {text: "I swallowed a tooth and now I'm coughing and can't get air", category: er}
+  - {text: "my throat is swelling", category: er}
+  - {text: "swelling under my jaw is spreading", category: er}
+  - {text: "the swelling reached my neck", category: er}
+  - {text: "my eye is swelling shut from the tooth infection", category: er}
+  - {text: "my face swelled up and I feel feverish", category: er}
+  - {text: "swelling is moving down into my neck and I have a temp of 102", category: er}
+  - {text: "my lips and tongue are swelling after the anesthetic", category: er}
+  - {text: "my tongue feels huge and I'm struggling to talk", category: er}
+  - {text: "i think im having an allergic reaction to the numbing shot", category: er}
+  - {text: "anaphylaxis", category: er}
+  - {text: "blood won't stop coming out", category: er}
+  - {text: "it keeps bleeding and bleeding", category: er}
+  - {text: "bleeding nonstop since the extraction", category: er}
+  - {text: "I'm bleeding a lot", category: er}
+  - {text: "the gauze is soaked and it's still bleeding after 2 hours", category: er}
+  - {text: "I was flossing and now it won't stop bleeding", category: er}
+  - {text: "I got punched in the face and my jaw might be broken", category: er}
+  - {text: "I fell and smashed my face on the pavement", category: er}
+  - {text: "jaw locked open and I can't close it", category: er}
+  - {text: "we were in a car crash, my teeth are broken", category: er}
+  - {text: "i blacked out", category: er}
+  - {text: "I feel like I'm going to pass out", category: er}
+  - {text: "my kid's front tooth got knocked out", category: urgent_dental}
+  - {text: "my adult tooth fell out when I got hit", category: urgent_dental}
+
 negatives:
   - text: "What are your opening hours on Saturday?"
   - text: "How much is a cleaning without insurance?"
@@ -112,4 +146,28 @@ negatives:
   # Knowingly caught. A baby tooth falling out on its own is normal; the reply
   # says baby teeth are not replanted and to call, which costs a sentence.
   - text: "my daughter's baby tooth fell out, is that okay?"
+    known_false_positive: true
+  # --- added in the Phase 7 audit: harder negatives -------------------------
+  - text: "Is it normal to have a little bleeding after extraction?"
+  - text: "my gums are swollen, should I come in?"
+  - text: "how do I stop bad breath"
+  - text: "do you treat jaw pain (TMJ)?"
+  - text: "How much is teeth whitening? My sister said it hurts"
+  - text: "My gums bleed a lot when I brush"
+  - text: "my jaw locks sometimes when I yawn"
+  - text: "the filling came out of my tooth"
+  - text: "I have a sore throat"
+  - text: "what if I swallow the mouthwash"
+  - text: "it hurts when I bite down"
+  - text: "I hit a hard piece of candy and my tooth hurts"
+  - text: "my face hurts from smiling at the wedding"
+  - text: "the numbness in my lip lasted hours"
+  - text: "I'm allergic to penicillin"
+  # Knowingly caught: each mentions an emergency's vocabulary in a context
+  # a keyword rule cannot tell apart. Over-triage, by choice.
+  - text: "can I get a cleaning if I have a cold and it's hard to breathe through my nose"
+    known_false_positive: true
+  - text: "I hit my head on the cabinet last week, unrelated, but can I book a cleaning?"
+    known_false_positive: true
+  - text: "What should I do if I knock out a tooth?"
     known_false_positive: true

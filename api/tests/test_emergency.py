@@ -1,8 +1,10 @@
 """G0, the emergency filter, as a pure function -- no database, no model.
 
-The labelled messages live in evals/emergency/cases.yaml. Every positive must
-be caught; the negatives' false-positive rate is printed, not gated, because
-over-triage is the failure this filter chooses. The route-level guarantees --
+Two labelled sets. evals/emergency/cases.yaml is the development set: every
+positive must be caught; false positives are printed, not gated, because
+over-triage is the failure this filter chooses. evals/emergency/holdout.yaml
+was never used to write a rule; its recall is the honest number, guarded
+against regression by HOLDOUT_RECALL_FLOOR. The route-level guarantees --
 that an emergency is answered with no model, no Redis and no rate-limit budget
 -- are in test_emergency_route.py.
 """
@@ -19,10 +21,15 @@ from patient_ops.config import get_settings
 from patient_ops.guardrails import emergency
 from patient_ops.guardrails.emergency import EmergencyMatch, normalize, reply, screen
 
-CASES_FILE = Path(__file__).resolve().parents[2] / "evals" / "emergency" / "cases.yaml"
-CASES = yaml.safe_load(CASES_FILE.read_text())
+EVALS = Path(__file__).resolve().parents[2] / "evals" / "emergency"
+CASES = yaml.safe_load((EVALS / "cases.yaml").read_text())
 POSITIVES = CASES["positives"]
 NEGATIVES = CASES["negatives"]
+HOLDOUT = yaml.safe_load((EVALS / "holdout.yaml").read_text())
+
+# A regression guard, not a target: below 1.0 so that an honest new holdout
+# case the rules miss is added as a miss, not "fixed" by tuning to it.
+HOLDOUT_RECALL_FLOOR = 0.9
 
 
 @pytest.mark.parametrize("case", POSITIVES, ids=lambda c: c["text"][:40])
@@ -62,6 +69,29 @@ def test_false_positive_rate_is_reported(capsys):
             f"{caught}/{len(NEGATIVES)} negatives flagged"
         )
     assert len(POSITIVES) >= 40 and len(NEGATIVES) >= 25
+    assert len(HOLDOUT["positives"]) >= 30 and len(HOLDOUT["negatives"]) >= 15
+
+
+def test_holdout_recall_is_reported_and_does_not_regress(capsys):
+    """The number to quote. The holdout was never used to write a rule."""
+    positives, negatives = HOLDOUT["positives"], HOLDOUT["negatives"]
+    caught = [c for c in positives if (m := screen(c["text"])) and m.category == c["category"]]
+    flagged = [c for c in negatives if screen(c["text"]) is not None]
+    recall = len(caught) / len(positives)
+    with capsys.disabled():
+        print(
+            f"\nG0 holdout: recall {len(caught)}/{len(positives)}, "
+            f"{len(flagged)}/{len(negatives)} negatives flagged"
+        )
+    missed = [c["text"] for c in positives if c not in caught]
+    assert recall >= HOLDOUT_RECALL_FLOOR, missed
+
+
+def test_the_holdout_does_not_overlap_the_development_set():
+    """A case in both is a case the rules were written against."""
+    dev = {c["text"].lower() for c in POSITIVES + NEGATIVES}
+    held = {c["text"].lower() for c in HOLDOUT["positives"] + HOLDOUT["negatives"]}
+    assert not dev & held
 
 
 def test_normalize_folds_what_patients_type():

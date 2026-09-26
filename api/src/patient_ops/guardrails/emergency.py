@@ -28,9 +28,13 @@ What it deliberately does not do:
                 it does not, and every rule has an id that the log records.
   Diagnosis     The reply says where to go, not what is wrong.
 
-The rules are measured against evals/emergency/cases.yaml: every positive there
-must match (a miss fails CI); the false-positive rate on the negatives is
-reported, not gated.
+Measured twice (tests/test_emergency.py):
+
+  evals/emergency/cases.yaml    the development set. Every positive must match
+                                (a miss fails CI); false positives reported.
+  evals/emergency/holdout.yaml  never used to write a rule. Recall there is the
+                                number to quote, and it may not fall below
+                                HOLDOUT_RECALL_FLOOR.
 """
 
 from __future__ import annotations
@@ -65,21 +69,59 @@ class EmergencyMatch:
     rule_id: str
 
 
-# Written against normalize()'s output: lower case, straight apostrophes, one
-# space between words. `'?` makes the apostrophe optional (can't / cant); a
-# gap of a few words is spelled (?:\S+ ){0,n}.
-_NEG = (
-    r"(?:can'?t|cannot|can not|couldn'?t|won'?t|will not|wouldn'?t|doesn'?t|does not"
-    r"|didn'?t|hasn'?t|haven'?t|isn'?t|not|unable to|never)"
-)
-_NEAR = r"(?:\S+ ){0,6}"  # up to six words between the two halves of a phrase
-_HARD = r"(?:hard|difficult|trouble|difficulty|struggling|struggle|problems?)"
-# Up to two words, none of which turns "breath" into a question about odour:
-# "problems with bad breath" is the most ordinary question a dentist gets.
-_GAP = r"(?:(?!bad\b|fresh\b|smelly\b|stinky\b)\S+ ){0,2}"
+# Written against _prepare()'s output: lower case, straight apostrophes, one
+# space between words, no punctuation. `'?` makes the apostrophe optional
+# (can't / cant).
+#
+# Most rules are _near(A, B): a word from each list, in either order, within a
+# few words of each other. That is the lesson of the Phase 7 audit: the first
+# version spelled out phrases ("can't breathe", "trouble breathing") and missed
+# more than half of what patients actually write -- "I can hardly breathe",
+# "breathing is really difficult". A patient's words come in any order; the
+# rules are written from the vocabulary of each emergency, not from examples.
 
-_SWELL = r"(?:swell\w*|swollen|puff\w*)"
-_SPREAD_TO = r"(?:eyes?|eyelids?|neck|throat|tongue|under my tongue|floor of (?:my )?mouth)"
+
+def _near(a: str, b: str, gap: int = 5) -> str:
+    return (
+        rf"\b(?:{a})\b(?: \S+){{0,{gap}}} (?:{b})\b"
+        rf"|\b(?:{b})\b(?: \S+){{0,{gap}}} (?:{a})\b"
+    )
+
+
+_NEG = (
+    r"can'?t|cannot|can not|couldn'?t|won'?t|will not|wouldn'?t|doesn'?t|does not"
+    r"|didn'?t|hasn'?t|haven'?t|isn'?t|is not|not|unable to|never|no longer"
+)
+# Words that say something is hard, painful or not working.
+_STRUGGLE = (
+    rf"{_NEG}|hard|harder|hardly|barely|difficult|difficulty|trouble|struggl\w*"
+    r"|labou?red|hurts?|hurting|painful|pain|problems?|impossible|tough|tight\w*|heavy"
+)
+
+_BREATH = r"breath\w*|breth\w*|breathin"
+_SWALLOW = r"swallow\w*"
+_SWELL = r"swell\w*|swollen|puff\w*|blown up|blew up|lump"
+_SPREAD_TO = r"eyes?|eyelids?|neck|throat|tongue|lips?|airway|floor of (?:my )?mouth"
+_SPREAD = r"spread\w*|growing|grows|getting (?:bigger|larger)|moving|reach\w*|travel\w*|all the way"
+_FEVER = (
+    r"fever\w*|chills|shiver\w*|(?:high|a|running a) temp\w*|temp of|temperature of"
+    r"|(?:10[0-5]|3[89]) (?:f|c|degrees)"
+)
+_BLEED = r"bleed\w*|bled|blood\w*"
+# Strong: bleeding that is not stopping. Weak: bleeding that is a lot -- which
+# is also how patients describe gums that bleed when they brush, so the weak
+# words do not count in a message about brushing or flossing.
+_BLEED_STRONG = (
+    rf"(?:{_NEG}) (?:\S+ ){{0,2}}(?:stop\w*|slow\w*|clot\w*)"
+    r"|keeps?|kept|nonstop|non stop|constantly|profuse\w*|soak\w*|pouring|gushing|spurting"
+    r"|no matter|for (?:\S+ )?hours|\d+ hours|all (?:day|night)"
+)
+_BLEED_WEAK = r"heavily|heavy|everywhere|a lot|lots|so much|too much"
+_FACE = r"face|jaw|head|mouth|nose|chin|cheek"
+_BLOW = (
+    r"punch\w*|hit|kick\w*|elbow\w*|smash\w*|slam\w*|struck|whack\w*|headbutt\w*"
+    r"|fell on|fall on|landed on|took an? \S+ to"
+)
 
 
 def _rule(id_: str, category: Category, *patterns: str) -> Rule:
@@ -87,85 +129,96 @@ def _rule(id_: str, category: Category, *patterns: str) -> Rule:
 
 
 RULES: tuple[Rule, ...] = (
-    # --- er: breathing and swallowing ------------------------------------
+    # --- er: breathing ---------------------------------------------------------
     _rule(
         "breathing",
         "er",
-        rf"\b{_NEG} {_GAP}breath\w*",  # can't breathe, cant breath, can not really breathe
-        rf"\b{_HARD} {_GAP}breath\w*",
-        r"\bshort(?:ness)? of breath\b",
-        r"\bgasping\b",
-        r"\bchok\w*",
-        r"\bthroat (?:is |feels )?(?:closing|tight\w*)",
+        _near(_BREATH, _STRUGGLE, 3),
+        _near(_NEG, r"(?:get|getting|enough|any) air", 3),
+        r"\bwheez\w*|\bgasp\w*|\bsuffocat\w*|\bchok\w*|\bshort(?:ness)? of breath\b",
+        _near("throat", r"closing|tight\w*|narrow\w*|weird|swell\w*|swollen", 3),
     ),
+    # --- er: swallowing ----------------------------------------------------------
+    _rule("swallowing", "er", _near(_SWALLOW, _STRUGGLE, 4)),
+    # --- er: allergic reaction (anaesthetic, latex, antibiotics) -----------------
     _rule(
-        "swallowing",
+        "allergic_reaction",
         "er",
-        rf"\b{_NEG} (?:\S+ ){{0,2}}swallow\w*",
-        rf"\b{_HARD} (?:\S+ ){{0,2}}swallow\w*",
+        r"\ballerg\w* (?:\S+ ){0,2}reaction\b|\banaphyla\w*|\bepi ?pen\b|\bhives\b|\bwelts\b",
     ),
-    # --- er: swelling that is spreading ------------------------------------
+    # --- er: swelling that is spreading, or in the airway --------------------------
     _rule(
         "spreading_swelling",
         "er",
-        rf"\b{_SWELL} {_NEAR}{_SPREAD_TO}\b",
-        rf"\b{_SPREAD_TO} {_NEAR}{_SWELL}",
+        _near(_SWELL, _SPREAD_TO, 8),
+        _near(_SWELL, _SPREAD, 6),
+        _near("tongue", r"huge|thick\w*|enormous|bigger", 3),
     ),
     # Facial swelling with a fever: "not something to sleep on", the document
     # says. Two lookaheads, so the words may come in either order, anywhere.
+    # Not "temperature" alone: "sensitive to temperature" is how patients
+    # describe an ordinary sensitive tooth.
     _rule(
         "swelling_with_fever",
         "er",
-        # Not "temperature" alone: "sensitive to temperature" is how patients
-        # describe an ordinary sensitive tooth.
-        rf"^(?=.*\b(?:fever\w*|chills|(?:high|a|running a) temperature)\b)(?=.*\b{_SWELL})",
+        rf"^(?=.*\b(?:{_FEVER})\b)(?=.*\b(?:{_SWELL}|abscess\w*)\b)",
     ),
-    # --- er: bleeding --------------------------------------------------------
+    # --- er: bleeding ----------------------------------------------------------------
     _rule(
         "uncontrolled_bleeding",
         "er",
-        rf"\bbleed\w* {_NEAR}{_NEG} (?:\S+ ){{0,2}}stop\w*",  # bleeding won't stop
-        rf"\b{_NEG} (?:\S+ ){{0,2}}stop\w* {_NEAR}bleed\w*",  # can't stop the bleeding
-        r"\b(?:heavy|heavily|profuse\w*|severe\w*|uncontroll\w*) (?:\S+ ){0,2}bleed\w*",
-        r"\bbleed\w* (?:\S+ ){0,2}(?:heavily|profusely|a lot|everywhere|nonstop|non stop)\b",
-        r"\b(?:lots of|a lot of|so much|too much|gushing|pouring) (?:\S+ ){0,1}blood\b",
+        _near(_BLEED, _BLEED_STRONG, 6),
+        rf"^(?!.*\b(?:brush|floss)\w*)(?:.*?)(?:{_near(_BLEED, _BLEED_WEAK, 6)})",
     ),
-    # --- er: injury to the face, jaw or head ---------------------------------
+    # --- er: injury to the face, jaw or head -------------------------------------------
     _rule(
         "face_or_head_injury",
         "er",
-        r"\b(?:broke|broken|fractured?|dislocated?) (?:\S+ ){0,2}jaw\b",
-        r"\bjaw (?:is |was |got |has been )?(?:broken|fractured|dislocated)\b",
-        r"\bhead injur\w*|\binjur\w* (?:\S+ ){0,2}head\b",
-        r"\b(?:hit|hurt|bang\w*|bump\w*|smash\w*) (?:\S+ ){0,2}head\b",
+        _near("jaw", r"broke\w*|broken|fractur\w*|dislocat\w*|shatter\w*", 4),
+        _near(r"jaw|mouth", r"(?:won'?t|can'?t|cannot|doesn'?t|will not) (?:\S+ )?close", 4),
+        _near("jaw", r"(?:locked|stuck) (?:open|shut|closed)", 2),
+        _near(_BLOW, _FACE, 4),
+        r"\bhead injur\w*|\bconcuss\w*",
+        _near(r"hit|bang\w*|bump\w*|smash\w*|struck|fell|fall", "head", 4),
         # A person knocked out -- not "my tooth got knocked out", which is the
         # urgent_dental rule's.
         r"(?<!tooth )(?<!teeth )\b(?:was|got|been|i) knocked (?:out|unconscious)\b"
         r"(?! (?:\S+ ){0,2}(?:tooth|teeth))",
-        r"\bknocked unconscious\b",
-        r"\b(?:lost|losing|loss of) consciousness\b",
-        r"\bunconscious\b|\bpassed out\b|\bpassing out\b|\bfainted\b|\bfainting\b",
-        r"\b(?:car|bike|cycling|motorcycle) (?:accident|crash)\b",
+        r"\bknocked unconscious\b|\b(?:lost|losing|loss of) consciousness\b",
+        r"\bunconscious\b|\bunresponsive\b|\bnot responding\b",
+        r"\bpass(?:ed|ing)? out\b|\bblack(?:ed|ing)? out\b|\bfaint(?:ed|ing)\b|\bfeel\w* faint\b",
+        r"\b(?:car|bike|cycling|motorcycle|traffic|road) (?:accident|crash|collision)\b",
+        r"\bhit by a car\b",
     ),
-    # --- er: chest pain --------------------------------------------------------
+    # --- er: chest pain ----------------------------------------------------------------
     _rule(
         "chest_pain",
         "er",
-        r"\bchest (?:\S+ ){0,2}(?:pain|hurts?|hurting|ache|aching|tight\w*|pressure)",
-        r"\b(?:pain|tightness|pressure) (?:\S+ ){0,2}chest\b",
-        r"\bheart attack\b",
-        r"\bpain (?:\S+ ){0,3}(?:down|into|to|in) (?:my )?(?:left )?arm\b",
+        _near(
+            "chest",
+            r"pain|hurt\w*|ache|aching|tight\w*|pressure|heavy|crushing|squeez\w*",
+            4,
+        ),
+        _near(r"(?:left )?arm", r"numb\w*|pain|tingl\w*", 3),
+        r"\bheart attack\b|\bcardiac\b",
     ),
-    # --- urgent_dental: a knocked-out tooth ------------------------------------
+    # --- urgent_dental: a knocked-out tooth ----------------------------------------------
     _rule(
         "knocked_out_tooth",
         "urgent_dental",
-        r"\bknock\w* (?:\S+ ){0,3}(?:tooth|teeth)\b",
-        r"\b(?:tooth|teeth) (?:\S+ ){0,3}knocked\b",
-        r"\b(?:tooth|teeth) (?:\S+ ){0,3}(?:fell|fallen|came|come|popped) out\b",
-        r"\b(?:lost|lose) (?:\S+ ){0,2}(?:front )?(?:tooth|teeth) (?:in|during|playing|from)\b",
+        _near(r"knock\w*", r"tooth|teeth", 4),
+        # Tooth first: "the filling came out of my tooth" is not this.
+        r"\b(?:tooth|teeth) (?:\S+ ){0,3}(?:fell|fallen|came|come|popped|pop|flew) out\b",
+        r"\b(?:lost|lose) (?:\S+ ){0,2}(?:tooth|teeth) (?:in|during|playing|from|at|when)\b",
         r"\bavuls\w*",
     ),
+)
+
+# "Bad breath" is the most ordinary question a dentist gets, and it contains
+# "breath". Removed before the rules run, so "problems with bad breath" does
+# not read as a breathing problem.
+_ODOUR = re.compile(
+    r"\b(?:bad|fresh|smelly|stinky|morning) breath\b|\bbreath (?:smells?|stinks?|odou?r|mints?)\b"
 )
 
 _SEVERITY: dict[Category, int] = {"er": 0, "urgent_dental": 1}  # lower is worse
@@ -186,8 +239,8 @@ def normalize(text: str) -> str:
 
 def screen(text: str) -> EmergencyMatch | None:
     """The most serious rule the message matches, or None."""
-    normalized = normalize(text)
-    matches = [rule for rule in RULES if rule.pattern.search(normalized)]
+    prepared = _ODOUR.sub(" ", normalize(text))
+    matches = [rule for rule in RULES if rule.pattern.search(prepared)]
     if not matches:
         return None
     worst = min(matches, key=lambda rule: _SEVERITY[rule.category])

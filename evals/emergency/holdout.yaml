@@ -1,0 +1,63 @@
+# G0 holdout: written before the Phase 7 audit rewrite of the rules, and never
+# used to write or tune a rule. It measures; it does not teach. When a message
+# here is missed, the fix is a rule written from the *category* (and a new case
+# in cases.yaml), never a pattern copied from this file -- or the number this
+# file reports stops meaning anything.
+#
+# Honest limit: the same author wrote the rules and these messages, so this is
+# a weaker holdout than one written by someone who has never seen the rules. A
+# clinician's list is the obvious next one.
+#
+# api/tests/test_emergency.py reports recall and false positives here and fails
+# only if recall drops below HOLDOUT_RECALL_FLOOR -- a regression guard, not a
+# target.
+
+positives:
+  - {text: "Help, my daughter can't breathe properly after her tooth was pulled", category: er}
+  - {text: "I'm having a hard time breathing and my face is puffy", category: er}
+  - {text: "breathing feels labored and my jaw is swollen", category: er}
+  - {text: "my throat feels tight and my tongue is getting bigger", category: er}
+  - {text: "I can barely swallow my own spit", category: er}
+  - {text: "swallowing is almost impossible now", category: er}
+  - {text: "the side of my face swelled and now my eyelid is puffy too", category: er}
+  - {text: "the lump under my jaw is growing and spreading down my neck", category: er}
+  - {text: "gum abscess, fever 39 and my cheek has blown up", category: er}
+  - {text: "my face is swollen and I'm shivering with chills", category: er}
+  - {text: "the socket keeps bleeding no matter how hard I bite on the gauze", category: er}
+  - {text: "my mouth won't stop bleeding", category: er}
+  - {text: "there's blood everywhere and it's not slowing down", category: er}
+  - {text: "i have been bleeding for 4 hours since the extraction", category: er}
+  - {text: "took an elbow to the face playing basketball, my jaw feels broken", category: er}
+  - {text: "my son fell off the trampoline and hit his head, now a tooth is loose", category: er}
+  - {text: "I fainted after the procedure", category: er}
+  - {text: "she's unresponsive", category: er}
+  - {text: "my dad was in a car accident and his teeth are smashed", category: er}
+  - {text: "I got hit in the mouth with a baseball bat and my jaw won't close", category: er}
+  - {text: "pressure in my chest and my left arm feels numb", category: er}
+  - {text: "chest is hurting badly", category: er}
+  - {text: "I think I'm having a heart attack", category: er}
+  - {text: "my lips swelled up right after the injection", category: er}
+  - {text: "I'm getting hives and my throat feels weird after the anesthetic", category: er}
+  - {text: "i can't get enough air", category: er}
+  - {text: "I'm choking", category: er}
+  - {text: "a tooth got knocked clean out in a fight", category: urgent_dental}
+  - {text: "my permanent tooth was knocked out skateboarding", category: urgent_dental}
+  - {text: "my front tooth popped out when I bit into an apple", category: urgent_dental}
+  - {text: "his adult tooth came out after a fall", category: urgent_dental}
+
+negatives:
+  - text: "Can I breathe through my mouth during the cleaning?"
+  - text: "How do I get rid of morning breath?"
+  - text: "my gum bled once when I flossed yesterday"
+  - text: "Is some swelling normal after a filling?"
+  - text: "do you do night guards for jaw clenching"
+  - text: "What happens if I swallow toothpaste?"
+  - text: "my kid is scared of the dentist, any tips"
+  - text: "I have a loose baby tooth, should I pull it?"
+  - text: "Can I pay with a credit card?"
+  - text: "Please move my appointment to next week"
+  - text: "does the numbing wear off quickly?"
+  - text: "I have a small bump on my gum, not painful"
+  - text: "What time do you open on Friday?"
+  - text: "my tooth feels sensitive when I drink cold water"
+  - text: "Is flossing before or after brushing better?"

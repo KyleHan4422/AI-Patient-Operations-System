@@ -117,6 +117,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         capacity=settings.rate_limit_capacity,
         refill_per_s=settings.rate_limit_refill_per_s,
     )
+    # G0's own budget: not whether an emergency is answered (always), only
+    # whether it is written down (api/routes_chat.py, emergency_recording).
+    app.state.emergency_limiter = RateLimiter(
+        app.state.coordinator,
+        capacity=settings.emergency_record_capacity,
+        refill_per_s=settings.emergency_record_refill_per_s,
+    )
     # R3: one breaker around the calendar for the whole process -- and, while
     # Redis answers, shared with every other worker. Each turn wraps its own
     # calendar in it (api/routes_chat.py), so the turn's degraded modes say

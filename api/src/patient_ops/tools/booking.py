@@ -32,6 +32,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from patient_ops.adapters.calendar.base import Booking, BookingRequest, CalendarProvider, Slot
 from patient_ops.db import repo
+from patient_ops.db.errors import translate_db_errors
 from patient_ops.domain.availability import SchedulingPolicy
 from patient_ops.errors import ErrorCode, ToolError
 from patient_ops.guardrails.booking_policy import ProposedVisit, violations
@@ -176,10 +177,21 @@ class BookingDesk:
 
         G5 goes first: a request that breaks the booking policy is refused
         before the calendar is called, as INVALID -- which the booking path
-        already answers by offering fresh times.
+        already answers by offering fresh times. Inside the trace, so a refusal
+        -- or a database that could not be asked -- is on the record like any
+        other failure of this call.
         """
         key = request.idempotency_key
-        await self._enforce_policy(request)
+
+        async def within_policy() -> Booking:
+            await self._enforce_policy(request)
+            return await self.dedup.run_once(
+                key,
+                lambda: self.calendar.book(request),
+                read_back=lambda: self.calendar.get_booking(idempotency_key=key),
+                ref=lambda booking: booking.appointment_id,
+            )
+
         return await self._traced(
             BOOK_APPOINTMENT,
             {
@@ -188,12 +200,7 @@ class BookingDesk:
                 "procedure": request.procedure_code,
                 "start_at": request.start_at.isoformat(),
             },
-            lambda: self.dedup.run_once(
-                key,
-                lambda: self.calendar.book(request),
-                read_back=lambda: self.calendar.get_booking(idempotency_key=key),
-                ref=lambda booking: booking.appointment_id,
-            ),
+            within_policy,
             lambda booking: (
                 f"appointment {booking.appointment_id}"
                 + ("" if booking.created else " (already written)")
@@ -210,14 +217,18 @@ class BookingDesk:
         they are not. So a request that fails the policy is first looked up by
         its key; if the row exists, the calendar replays it.
         """
-        started = clock.perf_counter()
         local_day = request.start_at.astimezone(self.tz).date()
-        async with self.session_factory() as session:
-            procedure = await repo.get_procedure(session, request.procedure_code)
-            if procedure is None:
-                return  # the calendar refuses an unknown procedure itself
-            schedules = await repo.schedules_for(session, [request.provider_id])
-            closures = await repo.closures_between(session, local_day, local_day)
+        # Classified like the calendar's own reads: a database that cannot be
+        # reached is TRANSIENT, so the booking path says the calendar did not
+        # answer and keeps the chosen time for a retry -- rather than the turn
+        # failing with an exception nothing above expected.
+        with translate_db_errors():
+            async with self.session_factory() as session:
+                procedure = await repo.get_procedure(session, request.procedure_code)
+                if procedure is None:
+                    return  # the calendar refuses an unknown procedure itself
+                schedules = await repo.schedules_for(session, [request.provider_id])
+                closures = await repo.closures_between(session, local_day, local_day)
         broken = violations(
             ProposedVisit(
                 provider_id=request.provider_id,
@@ -238,12 +249,6 @@ class BookingDesk:
             log.info("booking_policy_replay", key=request.idempotency_key, violations=broken)
             return
         rules = ",".join(broken)
-        self._record(
-            BOOK_APPOINTMENT,
-            {"idempotency_key": request.idempotency_key, "procedure": request.procedure_code},
-            started,
-            f"refused by G5: {rules}",
-        )
         log.warning("booking_policy_refused", key=request.idempotency_key, violations=broken)
         raise ToolError(ErrorCode.INVALID, f"booking policy: {rules}", cause=f"G5:{rules}")
 
@@ -262,7 +267,8 @@ class BookingDesk:
             # A classified failure is part of the booking path now -- a taken
             # slot is re-offered, an open breaker is explained -- so it gets
             # its row like any other call.
-            self._record(name, args, started, f"error: {exc.code}")
+            cause = f" ({exc.cause})" if exc.cause else ""
+            self._record(name, args, started, f"error: {exc.code}{cause}")
             raise
         self._record(name, args, started, summarize(result))
         return result

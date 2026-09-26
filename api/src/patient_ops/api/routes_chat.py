@@ -201,6 +201,27 @@ async def enforce_rate_limit(
         )
 
 
+async def emergency_recording(
+    request: Request,
+    degraded: Annotated[DegradedModes, Depends(turn_degradation)],
+    emergency: Emergency,
+) -> bool:
+    """Whether this emergency turn is written down. Never whether it is answered.
+
+    An emergency skips R5, so a client that puts "can't breathe" in every
+    message would otherwise get unlimited writes. Past its own, separate
+    budget the reply still goes out and is reported as unrecorded. Fails open,
+    like R5: with Redis down, it is recorded.
+    """
+    if emergency is None or not request.app.state.settings.rate_limit_enabled:
+        return True
+    client = request.client.host if request.client else "unknown"
+    decision = await request.app.state.emergency_limiter.take("emergency", client, degraded)
+    if not decision.allowed:
+        log.warning("emergency_flood", client=client, category=emergency.category)
+    return decision.allowed
+
+
 def require_toolset(request: Request, emergency: Emergency) -> ReadOnlyToolset | None:
     """The turn's read-only tools, built fresh: it records what this turn used.
 
@@ -292,6 +313,7 @@ async def turn(
     request: Request,
     degraded: Annotated[DegradedModes, Depends(turn_degradation)],
     emergency: Emergency,
+    record_emergency: Annotated[bool, Depends(emergency_recording)],
     chat_model: Annotated[BaseChatModel | None, Depends(require_chat_model)],
     toolset: Annotated[ReadOnlyToolset | None, Depends(require_toolset)],
     booking: Annotated[BookingDesk | None, Depends(booking_desk)],
@@ -314,6 +336,8 @@ async def turn(
             channel=body.channel,
             request_id=request_id,
             clinic_phone=state.settings.clinic_phone,
+            record=record_emergency,
+            degraded=degraded,
         )
         async for event in events:
             if isinstance(event, Stage):

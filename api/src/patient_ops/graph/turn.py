@@ -17,6 +17,7 @@ from langchain_core.runnables import RunnableConfig
 from langgraph.graph.state import CompiledStateGraph
 
 from patient_ops.db.transcript import TurnRecord
+from patient_ops.degradation import DegradedModes
 from patient_ops.graph.build import USER_FACING_NODES
 from patient_ops.graph.context import GraphContext, TurnRecorder
 from patient_ops.guardrails.emergency import EmergencyMatch
@@ -25,7 +26,7 @@ from patient_ops.obs.logging import get_logger
 
 log = get_logger(__name__)
 
-# An emergency reply waits this long, at most, for each of its two writes. The
+# An emergency reply waits this long, at most, for its two writes together. The
 # writes are how staff see what happened; the reply is what the patient needs.
 # With Postgres down, the patient is told to call 911 two seconds late rather
 # than not at all.
@@ -134,27 +135,42 @@ async def emergency_turn(
     channel: Literal["web", "voice"],
     request_id: str,
     clinic_phone: str,
+    record: bool = True,
+    degraded: DegradedModes | None = None,
 ) -> AsyncIterator[Stage | Final]:
     """A turn G0 answered. No model is called and the graph does not run.
 
     Written down twice, as a graph turn would be: into the transcript, so
     staff see it, and into the checkpoint, so the conversation's next turn
-    knows the patient reported an emergency and was told where to go. Each
-    write is bounded and best effort -- a failure is logged and reported as
-    degraded, and the reply goes out regardless.
+    knows the patient reported an emergency and was told where to go. Both
+    writes run together under one budget (EMERGENCY_WRITE_TIMEOUT_S) and are
+    best effort: one that fails or runs out of time is logged and reported as
+    degraded (`transcript`), and the reply goes out regardless. A write cut off
+    by the budget may still have committed, so "unrecorded" means "not known
+    to be recorded".
+
+    `record=False` -- this client is past its emergency write budget
+    (api/routes_chat.py, emergency_recording) -- answers without writing at
+    all, and says so the same way.
 
     The checkpoint write also ends any booking in progress. The last thing
     the patient was told is to go to the emergency room, not "Shall I book
     it?", so a "yes" on the next turn must not write an appointment. Its
-    holds expire by themselves.
+    holds expire by themselves. If that write does not land, the booking is
+    still open: the one gap this leaves, logged as emergency_unrecorded.
     """
+    degraded = degraded if degraded is not None else DegradedModes()
     yield Stage("emergency")
     final = emergency_reply(match, clinic_phone)
     guardrail = {"id": "G0", "category": match.category}
     log.warning("emergency_triggered", category=match.category, rule=match.rule_id)
 
-    degraded: list[str] = []
-    record = TurnRecord(
+    if not record:
+        degraded.note(UNRECORDED, "emergency write budget exhausted")
+        yield Final(final, tuple(degraded.modes), guardrail)
+        return
+
+    turn = TurnRecord(
         thread_id=thread_id,
         channel=channel,
         user_text=text,
@@ -176,19 +192,25 @@ async def emergency_turn(
         "degraded_modes": [],
         "booking": None,
     }
-    for name, write in (
-        ("transcript", lambda: recorder.record_turn(record)),
+    writes = {
+        asyncio.ensure_future(recorder.record_turn(turn)): "transcript",
         # As `respond`: the turn is over, and the next one starts from START.
-        (
-            "checkpoint",
-            lambda: graph.aupdate_state(turn_config(thread_id), update, as_node="respond"),
-        ),
-    ):
-        try:
-            await asyncio.wait_for(write(), EMERGENCY_WRITE_TIMEOUT_S)
-        except Exception as exc:
-            # Not BaseException: a client disconnect must still cancel.
+        asyncio.ensure_future(
+            graph.aupdate_state(turn_config(thread_id), update, as_node="respond")
+        ): "checkpoint",
+    }
+    try:
+        done, pending = await asyncio.wait(writes, timeout=EMERGENCY_WRITE_TIMEOUT_S)
+    finally:
+        # Also on cancellation (a client disconnect): no write outlives the turn.
+        for task in writes:
+            if not task.done():
+                task.cancel()
+    for task, name in writes.items():
+        if task in pending:
+            log.error("emergency_unrecorded", write=name, error_type="Timeout")
+            degraded.note(UNRECORDED, f"{name}: timeout")
+        elif (exc := task.exception()) is not None:
             log.error("emergency_unrecorded", write=name, error_type=type(exc).__name__)
-            if UNRECORDED not in degraded:
-                degraded.append(UNRECORDED)
-    yield Final(final, tuple(degraded), guardrail)
+            degraded.note(UNRECORDED, f"{name}: {type(exc).__name__}")
+    yield Final(final, tuple(degraded.modes), guardrail)

@@ -17,6 +17,7 @@ from hypothesis import assume, given
 from hypothesis import strategies as st
 
 from patient_ops.adapters.calendar.base import BookingRequest
+from patient_ops.db.session import build_engine, build_session_factory
 from patient_ops.degradation import DegradedModes
 from patient_ops.domain.availability import ScheduleWindow, SchedulingPolicy
 from patient_ops.errors import ErrorCode, ToolError
@@ -156,7 +157,7 @@ async def test_the_desk_refuses_a_policy_breach_without_writing(chat, clinic, se
     assert exc.value.cause == "G5:wrong_duration"
     assert await booked_count(session_factory) == 0
     (call,) = desk.trace
-    assert call.summary == "refused by G5: wrong_duration", "the refusal is on the record"
+    assert call.summary == "error: invalid (G5:wrong_duration)", "the refusal is on the record"
 
 
 async def test_a_replay_is_not_refused_when_the_clock_has_moved_on(chat, clinic, session_factory):
@@ -191,3 +192,22 @@ async def test_a_tampered_draft_is_refused_and_fresh_times_offered(chat, session
     assert reply.startswith(replies.SLOT_UNAVAILABLE)
     assert await appointments(session_factory) == []
     assert await chat.kind() == "booking_offer"
+
+
+async def test_a_database_that_cannot_be_asked_is_transient_not_a_crash(
+    chat, clinic, session_factory, test_settings
+):
+    """Found in the Phase 7 audit: the policy's own reads raised a raw
+    OperationalError, which the booking path does not catch -- the patient got
+    "something went wrong" instead of "the calendar did not answer, say yes to
+    try again". Now classified like every other read on this path."""
+    unreachable = test_settings.model_copy(
+        update={"database_url": "postgresql://x:y@127.0.0.1:1/z", "db_connect_timeout_s": 0.5}
+    )
+    desk = chat.desk(DegradedModes())
+    desk.session_factory = build_session_factory(build_engine(unreachable))
+    with pytest.raises(ToolError) as exc:
+        await desk.book(cleaning(clinic, local(FRI, 9), local(FRI, 10)))
+    assert exc.value.code is ErrorCode.TRANSIENT
+    assert desk.trace[-1].summary.startswith("error: transient")
+    assert await booked_count(session_factory) == 0

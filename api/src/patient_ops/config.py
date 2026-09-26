@@ -70,6 +70,12 @@ class Settings(BaseSettings):
     rate_limit_enabled: bool = True
     rate_limit_capacity: int = Field(default=20, ge=1, le=10_000)
     rate_limit_refill_per_s: float = Field(default=0.33, gt=0, le=1_000)
+    # Emergencies (guardrail G0) are never refused -- but each one is written
+    # to the transcript and the checkpoint, so without a budget a message
+    # containing "can't breathe" is a way around R5 and into the database.
+    # Past this budget the reply still goes out; it is just not written down.
+    emergency_record_capacity: int = Field(default=10, ge=1, le=10_000)
+    emergency_record_refill_per_s: float = Field(default=0.1, gt=0, le=1_000)
 
     # --- Health -----------------------------------------------------------
     # Per-dependency probe budget. A health endpoint that can hang is worse
