@@ -24,6 +24,7 @@ HOLDS: Final = "holds"  # R1: slots offered without a hold; Postgres EXCLUDE dec
 IDEMPOTENCY: Final = "idempotency"  # R4: no in-flight dedup; Postgres UNIQUE decides
 BREAKER: Final = "breaker"  # R3: the breaker is per process, not shared
 RATE_LIMIT: Final = "rate_limit"  # R5: the request was let through unmetered
+EMERGENCY_MARK: Final = "emergency_mark"  # R6: an emergency left no mark for the booking path
 
 
 class DegradedModes:

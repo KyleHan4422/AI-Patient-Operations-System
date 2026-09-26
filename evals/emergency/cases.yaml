@@ -111,6 +111,48 @@ positives:
   - {text: "I feel like I'm going to pass out", category: er}
   - {text: "my kid's front tooth got knocked out", category: urgent_dental}
   - {text: "my adult tooth fell out when I got hit", category: urgent_dental}
+  # --- crisis ------------------------------------------------------------------
+  - {text: "I want to kill myself", category: crisis}
+  - {text: "sometimes I think about suicide", category: crisis}
+  - {text: "i don't want to be alive anymore", category: crisis}
+  - {text: "I've been cutting myself", category: crisis}
+  - {text: "the pain is so bad I want to die", category: crisis}
+  - {text: "thinking of taking an overdose of my painkillers", category: crisis}
+  # --- Spanish ------------------------------------------------------------------
+  - {text: "No puedo respirar", category: er}
+  - {text: "me cuesta mucho tragar", category: er}
+  - {text: "la hinchazón me llega hasta el ojo", category: er}
+  - {text: "tengo fiebre y la cara hinchada", category: er}
+  - {text: "me estoy ahogando", category: er}
+  - {text: "sigue sangrando, no para desde hace horas", category: er}
+  - {text: "creo que tengo la mandíbula rota", category: er}
+  - {text: "se desmayó en la silla", category: er}
+  - {text: "dolor en el pecho", category: er}
+  - {text: "tuve una reacción alérgica a la anestesia", category: er}
+  - {text: "se me cayó un diente cuando me golpeé", category: urgent_dental}
+  - {text: "quiero quitarme la vida", category: crisis}
+  # --- Mandarin -----------------------------------------------------------------
+  - {text: "喘不上气", category: er}
+  - {text: "我咽不下东西", category: er}
+  - {text: "脸肿到脖子了", category: er}
+  - {text: "我发烧了，牙龈肿", category: er}
+  - {text: "拔牙的地方血止不住", category: er}
+  - {text: "下巴好像骨折了", category: er}
+  - {text: "他晕倒了", category: er}
+  - {text: "胸口疼", category: er}
+  - {text: "打了麻药以后出现过敏反应", category: er}
+  - {text: "打球时牙被撞掉了", category: urgent_dental}
+  - {text: "我想自杀", category: crisis}
+  # --- told in pieces: `context` is the conversation's earlier messages ----------
+  - text: "and now I can't really swallow"
+    context: ["my wisdom tooth area is sore"]
+    category: er
+  - text: "it's gone down to my neck"
+    context: ["my jaw has been swollen for two days"]
+    category: er
+  - text: "y ahora me llega al ojo"
+    context: ["tengo la cara hinchada"]
+    category: er
 
 negatives:
   - text: "What are your opening hours on Saturday?"
@@ -171,3 +213,19 @@ negatives:
     known_false_positive: true
   - text: "What should I do if I knock out a tooth?"
     known_false_positive: true
+  # --- crisis look-alikes ---------------------------------------------------------
+  - text: "this toothache is killing me"
+  - text: "I'm dying to get my teeth whitened"
+  - text: "my kid would die of embarrassment with braces"
+  # --- Spanish and Mandarin ---------------------------------------------------------
+  - text: "¿A qué hora abren el sábado?"
+  - text: "me sangran un poco las encías al cepillarme"
+  - text: "se me cayó la corona"
+  - text: "我的牙套掉了"
+  - text: "孩子的乳牙松了"
+  - text: "补牙多少钱"
+  # --- the same emergency is not answered again for "ok thanks" -------------------
+  - text: "ok thanks"
+    context: ["I can't breathe and my face is swollen"]
+  - text: "ok, I'm on my way to the ER"
+    context: ["the bleeding won't stop"]

@@ -4,12 +4,12 @@
 
 | | G0 emergency filter | G5 booking policy |
 |---|---|---|
-| Where | The chat route, before anything else is resolved (`guardrails/emergency.py`) | `BookingDesk.book()`, before the calendar is called (`guardrails/booking_policy.py`) |
-| What | Vocabulary rules from `knowledge_base/dental-emergencies.md`, words in either order: breathing or swallowing trouble, spreading or airway swelling, allergic reaction, bleeding that will not stop, face/jaw/head injury or fainting, chest pain, swelling with fever (-> call 911); a knocked-out tooth (-> call the clinic now) | Right length for the procedure, inside the provider's hours, not a closure, on the slot grid, at least the lead time ahead, within the horizon |
-| Answer | Fixed text with its source: no model, no graph | `INVALID`, which the booking path answers with fresh times |
+| Where | The chat route, before anything else is resolved; with the conversation's last two messages once past the rate limit (`guardrails/emergency.py`) | `BookingDesk.book()`, before the calendar is called (`guardrails/booking_policy.py`) |
+| What | Vocabulary rules from `knowledge_base/dental-emergencies.md`, words in either order: breathing or swallowing trouble, spreading or airway swelling, allergic reaction, bleeding that will not stop, face/jaw/head injury or fainting, chest pain, swelling with fever (-> call 911); thoughts of suicide or self-harm (-> 988, or 911 in danger); a knocked-out tooth (-> call the clinic now). In English, Spanish and Mandarin, the clinic's three languages; a Spanish or Mandarin match is answered in that language first | Right length for the procedure, inside the provider's hours, not a closure, on the slot grid, at least the lead time ahead, within the horizon |
+| Answer | Fixed text with its source: no model, no graph, any length up to 20,000 characters (others stop at 2,000) | `INVALID`, which the booking path answers with fresh times |
 | Cannot be stopped by | The rate limit, a missing model or embedder, Redis being down, a slow or failed transcript write (both writes share one 2 s budget; reported as `degraded: ["transcript"]`) | A database it cannot read: that is `TRANSIENT`, said as "the calendar did not answer" with the time kept for a retry |
-| Leaves behind | Transcript row (`meta.guardrail = "G0"`), a checkpoint the next turn continues from, no open booking -- within a write budget of its own (10 per client, one more per 10 s), past which the reply still goes out unrecorded, so an emergency keyword is not a way around R5 into the database | A `tool_calls` row, `error: invalid (G5:<rules>)` |
-| Proven by | `evals/emergency/holdout.yaml`, never used to write a rule: **31/31 recalled, 0/15 negatives flagged**. `cases.yaml`, the development set: 80/80, 4/49 negatives flagged (all labelled known false positives). `test_emergency_route.py` | `test_booking_policy.py`: every slot `compute_slots` generates passes, nudged ones do not |
+| Leaves behind | Transcript row (`meta.guardrail = "G0"`), a checkpoint the next turn continues from, no open booking, and a Redis mark (R6) so that even if the checkpoint write fails, the booking path asks for the read-back again instead of taking the next "yes" -- within a write budget of its own (10 per client, one more per 10 s), past which the reply still goes out unrecorded, so an emergency keyword is not a way around R5 into the database | A `tool_calls` row, `error: invalid (G5:<rules>)` |
+| Proven by | `evals/emergency/holdout.yaml`, never used to write a rule: **46/46 recalled, 1/23 negatives flagged**. `cases.yaml`, the development set: 112/112, 4/60 flagged (all labelled known false positives). `test_emergency_route.py` | `test_booking_policy.py`: every slot `compute_slots` generates passes, nudged ones do not |
 
 Both fail in the safe direction on purpose. G0 does not understand negation --
 "I'm not having trouble breathing" is told to call 911 -- because over-triage
@@ -26,17 +26,21 @@ scored 50/50 on the set written alongside it -- and 12/29 on phrasings written
 afterwards. The rules now match each emergency's vocabulary in either order,
 and the holdout exists so that a number like that cannot happen silently
 again. But the holdout was written by the rules' author; a clinician's list is
-the next test it needs. Known limits:
+the next test it needs, and the Spanish and Mandarin replies want a native
+speaker's review. Known limits:
 
-- One message at a time: "my face is swollen", then "now it's reaching my eye"
-  in the next message, is not caught. The knowledge branch, which can quote
-  the emergencies document, is the backstop.
-- English only, like the knowledge base.
-- A message over 2,000 characters is refused (422) before G0 reads it. The web
-  client cannot send one.
-- If the checkpoint write fails, a booking in progress stays open.
-- Not a crisis line: self-harm is not in the dental emergencies document, and
-  is not covered.
+- An emergency told in pieces is read across the last two messages, and only
+  counts if the newest one adds something -- so "ok thanks" is not answered
+  with the same reply again. That read is after the rate limit (it reads the
+  database): a client over its limit is refused before it can happen. And it
+  over-triages across messages: "how long does swelling last?" then "can I
+  use my eye drops?" is the holdout's one false positive.
+- Past 20,000 characters, the request is refused before G0 reads it.
+- If the checkpoint write and Redis both fail, a booking in progress stays
+  open.
+- Three languages, by keyword. Anything else reaches the classifier, and the
+  knowledge branch -- which can quote the emergencies document -- is the
+  backstop.
 
 ## Booking: what the model may do, and what only code does
 
@@ -75,6 +79,7 @@ R1, R3 and R4 sit on the booking path; R5 is in front of every chat turn.
 | R3 circuit breaker | After 5 consecutive calendar failures, fail fast for 30 s, then let exactly one probe through -- shared by every worker | Now: every calendar call | Per-process breaker | Unaffected -- weaker protection | `test_breaker_degrades_to_a_per_process_breaker_that_still_opens` |
 | R4 in-flight dedup | A duplicate request waits for the original instead of calling the calendar again | Now: writing a booking | Both requests write; the UNIQUE idempotency key returns one appointment | Unaffected -- one extra call | `test_dedup_degrades_to_the_unique_key` |
 | R5 rate limit | Token bucket per client on chat turns; `429` + `Retry-After` | Now: `POST /api/chat/turn` | Let the request through | Unaffected | `test_rate_limit_fails_open` |
+| R6 emergency marks | "This conversation reported an emergency at T", read before a booking is written | Now: G0 turns and the booking read-back | No mark; the checkpoint write alone ends the booking | Unaffected unless that write also fails | `test_if_the_checkpoint_write_fails_the_mark_still_stops_the_yes` |
 
 Every fallback is visible: it is logged at WARN as `degraded_mode`, recorded in
 the turn's `degraded_modes`, and returned in the chat stream's `done` event

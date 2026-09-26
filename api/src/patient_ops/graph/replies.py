@@ -282,6 +282,14 @@ def offer_sentence(procedure_name: str, slots: Sequence[SlotView], *, lead: str 
     )
 
 
+# Said before the read-back again when the patient reported an emergency since
+# it was first asked (graph/nodes/booking.py, _confirm).
+READ_BACK_AFTER_EMERGENCY = (
+    "Before I book anything: you told me about an emergency a moment ago. If you "
+    "are safe and still want this appointment, say yes."
+)
+
+
 def read_back_sentence(procedure_name: str, slot: SlotView) -> str:
     return (
         f"Just to confirm: {procedure_name} with {slot.provider_name} on "

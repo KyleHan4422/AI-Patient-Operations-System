@@ -45,6 +45,28 @@ positives:
   - {text: "my front tooth popped out when I bit into an apple", category: urgent_dental}
   - {text: "his adult tooth came out after a fall", category: urgent_dental}
 
+  # --- added with the Mandarin, Spanish, crisis and two-message rules,
+  # written before those rules existed ------------------------------------
+  - {text: "我呼吸很困难，脸也肿了", category: er}
+  - {text: "拔完牙以后一直流血，止不住", category: er}
+  - {text: "脸肿到眼睛了，还发烧", category: er}
+  - {text: "我孩子摔倒磕掉了一颗门牙", category: urgent_dental}
+  - {text: "胸口很闷，左边胳膊发麻", category: er}
+  - {text: "no puedo respirar bien y tengo la cara hinchada", category: er}
+  - {text: "me sacaron una muela y la sangre no para", category: er}
+  - {text: "a mi hijo se le cayó un diente de un golpe jugando fútbol", category: urgent_dental}
+  - {text: "tengo fiebre y la mejilla muy inflamada", category: er}
+  - {text: "honestly I just want to end my life", category: crisis}
+  - {text: "i've been thinking about killing myself", category: crisis}
+  - {text: "我不想活了", category: crisis}
+  - {text: "ya no quiero vivir", category: crisis}
+  - text: "now it's spreading toward my eye"
+    context: ["my left cheek has been swollen since yesterday"]
+    category: er
+  - text: "and it still won't stop"
+    context: ["I had a tooth pulled this morning", "there's a lot of blood on the gauze"]
+    category: er
+
 negatives:
   - text: "Can I breathe through my mouth during the cleaning?"
   - text: "How do I get rid of morning breath?"
@@ -61,3 +83,12 @@ negatives:
   - text: "What time do you open on Friday?"
   - text: "my tooth feels sensitive when I drink cold water"
   - text: "Is flossing before or after brushing better?"
+  - text: "请问周六开门吗？"
+  - text: "洗牙多少钱"
+  - text: "我刷牙的时候牙龈有点出血"
+  - text: "¿Aceptan seguro dental?"
+  - text: "quiero hacer una cita para una limpieza"
+  - text: "me duele un poco la muela cuando como algo frío"
+  - text: "this toothache is killing me, can I come in today?"
+  - text: "can I use my eye drops before the appointment?"
+    context: ["how long does swelling last after a filling?"]

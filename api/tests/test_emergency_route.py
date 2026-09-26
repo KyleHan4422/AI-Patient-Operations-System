@@ -11,15 +11,19 @@ from __future__ import annotations
 import asyncio
 import time
 import uuid
+from datetime import timedelta
 
 from langgraph.checkpoint.memory import InMemorySaver
 from pydantic import SecretStr
 
+from patient_ops.api.routes_chat import MAX_MESSAGE_CHARS
 from patient_ops.db.transcript import TurnRecord
+from patient_ops.graph import replies
 from patient_ops.graph import turn as turn_module
 from patient_ops.graph.build import build_graph
 from patient_ops.graph.turn import UNRECORDED, Final, Stage, emergency_turn, turn_config
 from patient_ops.guardrails.emergency import screen
+from patient_ops.redis_layer.emergency_marks import EmergencyMarks
 from tests.factories import booked_count
 from tests.fakes import ListRecorder, PinnedIntent, TimingOutModel
 from tests.test_booking_flow import BookingChat, offer_cleanings
@@ -80,9 +84,9 @@ async def test_an_emergency_is_answered_with_redis_down(degraded_settings):  # n
     async with running_app(degraded_settings, TimingOutModel()) as client:
         events = await say(client, EMERGENCY)
     assert_emergency_stream(events)
-    # Its write budget failed open, as R5 does, and says so; the turn itself
-    # was never refused or limited.
-    assert events[-1].data["degraded"] == ["rate_limit"]
+    # Its write budget failed open, as R5 does, and no mark could be left for
+    # the booking path; both are said. The turn itself was never refused.
+    assert events[-1].data["degraded"] == ["rate_limit", "emergency_mark"]
 
 
 async def test_past_the_write_budget_an_emergency_is_answered_but_not_recorded(
@@ -125,7 +129,7 @@ class FailingRecorder:
         raise OSError("postgres is down")
 
 
-async def _run(graph, recorder, text: str, thread_id: uuid.UUID) -> list[Stage | Final]:
+async def _run(graph, recorder, text: str, thread_id: uuid.UUID, **kwargs) -> list[Stage | Final]:
     match = screen(text)
     assert match is not None
     return [
@@ -139,6 +143,7 @@ async def _run(graph, recorder, text: str, thread_id: uuid.UUID) -> list[Stage |
             channel="web",
             request_id="req-test",
             clinic_phone="(212) 555-0199",
+            **kwargs,
         )
     ]
 
@@ -206,3 +211,65 @@ async def test_an_emergency_ends_a_booking_so_a_later_yes_writes_nothing(
     reply = await chat.say("yes", model=PinnedIntent())
     assert await booked_count(session_factory) == 0
     assert "booked" not in reply.lower()
+
+
+class UnwritableCheckpoint:
+    """A graph whose checkpoint write fails: the emergency turn's one gap."""
+
+    async def aupdate_state(self, *args, **kwargs):
+        raise OSError("checkpoint write failed")
+
+
+async def test_if_the_checkpoint_write_fails_the_mark_still_stops_the_yes(
+    session_factory, clinic, calendar, coordinator
+):
+    """The booking stays open in the checkpoint, so the next "yes" reaches
+    _confirm -- which sees the emergency mark (R6) and asks again. A yes to
+    that question books it."""
+    chat = BookingChat(session_factory, calendar, coordinator)
+    await offer_cleanings(chat)
+    await chat.say("the second one")
+
+    chat.now += timedelta(seconds=30)
+    events = await _run(
+        UnwritableCheckpoint(),
+        chat.recorder,
+        EMERGENCY,
+        chat.thread_id,
+        marks=EmergencyMarks(coordinator),
+        now=chat.now,
+    )
+    assert events[-1].degraded == (UNRECORDED,)
+    assert (await chat.state())["booking"] is not None, "the gap this test is about"
+
+    chat.now += timedelta(seconds=30)
+    reply = await chat.say("yes", model=PinnedIntent())
+    assert reply.startswith(replies.READ_BACK_AFTER_EMERGENCY)
+    assert await booked_count(session_factory) == 0
+
+    assert (await chat.say("yes")).startswith("You're booked"), "asked again, then booked"
+
+
+async def test_an_emergency_told_across_two_messages_is_caught(chat_settings):  # noqa: F811
+    async with running_app(chat_settings, PinnedIntent()) as client:
+        first = await say(client, "my left cheek is swollen")
+        thread_id = first[0].data["thread_id"]
+        second = await say(client, "now it's spreading toward my eye", thread_id)
+        third = await say(client, "ok thanks", thread_id)
+
+    assert first[1].data["intent"] == "smalltalk"
+    assert_emergency_stream(second)
+    assert third[1].data["intent"] == "smalltalk", "not answered with the same reply again"
+
+
+async def test_an_overlong_emergency_is_answered_and_an_overlong_question_is_not(
+    chat_settings,  # noqa: F811
+):
+    long_emergency = "I can't breathe. " + "please help " * 400
+    long_question = "what are your hours " * 150
+    assert len(long_emergency) > MAX_MESSAGE_CHARS < len(long_question)
+    async with running_app(chat_settings, TimingOutModel()) as client:
+        events = await say(client, long_emergency)
+        refused = await client.post("/api/chat/turn", json={"message": long_question})
+    assert_emergency_stream(events)
+    assert refused.status_code == 422

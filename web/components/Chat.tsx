@@ -23,9 +23,9 @@ const STAGE_LABELS: Record<string, string> = {
   emergency: "…",
 };
 
-// 911 and the clinic's number in an emergency reply become tel: links, so a
-// patient on a phone is one tap from calling.
-const PHONE_NUMBER = /(\b911\b|\(\d{3}\) \d{3}-\d{4})/;
+// 911, 988 and the clinic's number in an emergency reply become tel: links,
+// so a patient on a phone is one tap from calling.
+const PHONE_NUMBER = /(\b911\b|\b988\b|\(\d{3}\) \d{3}-\d{4})/;
 
 export function Chat() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);

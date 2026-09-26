@@ -39,6 +39,7 @@ from patient_ops.graph.context import GraphContext
 from patient_ops.graph.turn import Final, run_turn, turn_config
 from patient_ops.redis_layer.breaker import BreakerEvent, FailoverBreaker, build_breaker
 from patient_ops.redis_layer.client import Coordinator
+from patient_ops.redis_layer.emergency_marks import EmergencyMarks
 from patient_ops.redis_layer.holds import SlotHolds
 from patient_ops.redis_layer.idempotency import InFlightDedup
 from patient_ops.tools.booking import BookingDesk, idempotency_key
@@ -87,6 +88,7 @@ class BookingChat:
             dedup=InFlightDedup(self.coordinator, inflight_ttl_s=30, wait_s=1, degraded=degraded),
             tz=TZ,
             now=lambda: self.now,
+            marks=EmergencyMarks(self.coordinator, degraded=degraded),
         )
 
     async def say(self, text: str, model: BaseChatModel | None = None) -> str:

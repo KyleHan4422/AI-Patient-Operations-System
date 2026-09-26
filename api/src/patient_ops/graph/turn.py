@@ -10,6 +10,7 @@ import asyncio
 import uuid
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Any, Literal
 
 from langchain_core.messages import AIMessage, HumanMessage
@@ -23,6 +24,7 @@ from patient_ops.graph.context import GraphContext, TurnRecorder
 from patient_ops.guardrails.emergency import EmergencyMatch
 from patient_ops.guardrails.emergency import reply as emergency_reply
 from patient_ops.obs.logging import get_logger
+from patient_ops.redis_layer.emergency_marks import EmergencyMarks
 
 log = get_logger(__name__)
 
@@ -137,6 +139,8 @@ async def emergency_turn(
     clinic_phone: str,
     record: bool = True,
     degraded: DegradedModes | None = None,
+    marks: EmergencyMarks | None = None,
+    now: datetime | None = None,
 ) -> AsyncIterator[Stage | Final]:
     """A turn G0 answered. No model is called and the graph does not run.
 
@@ -157,18 +161,27 @@ async def emergency_turn(
     the patient was told is to go to the emergency room, not "Shall I book
     it?", so a "yes" on the next turn must not write an appointment. Its
     holds expire by themselves. If that write does not land, the booking is
-    still open: the one gap this leaves, logged as emergency_unrecorded.
+    still open -- so the turn also leaves an emergency mark in Redis (R6,
+    `marks`), which the booking path reads before it writes. The mark is left
+    even past the write budget: it is one key, overwritten, not a new row.
     """
     degraded = degraded if degraded is not None else DegradedModes()
     yield Stage("emergency")
     final = emergency_reply(match, clinic_phone)
     guardrail = {"id": "G0", "category": match.category}
-    log.warning("emergency_triggered", category=match.category, rule=match.rule_id)
-
+    log.warning(
+        "emergency_triggered",
+        category=match.category,
+        rule=match.rule_id,
+        lang=match.lang,
+        from_context=match.from_context,
+    )
+    writes: dict[asyncio.Future[object], str] = {}
+    if marks is not None:
+        at = now if now is not None else datetime.now(UTC)
+        writes[asyncio.ensure_future(marks.mark(str(thread_id), at))] = "mark"
     if not record:
         degraded.note(UNRECORDED, "emergency write budget exhausted")
-        yield Final(final, tuple(degraded.modes), guardrail)
-        return
 
     turn = TurnRecord(
         thread_id=thread_id,
@@ -182,6 +195,8 @@ async def emergency_turn(
             "guardrail": "G0",
             "category": match.category,
             "rule": match.rule_id,
+            "lang": match.lang,
+            "from_context": match.from_context,
         },
     )
     update = turn_input(text) | {
@@ -192,25 +207,32 @@ async def emergency_turn(
         "degraded_modes": [],
         "booking": None,
     }
-    writes = {
-        asyncio.ensure_future(recorder.record_turn(turn)): "transcript",
+    if record:
+        writes[asyncio.ensure_future(recorder.record_turn(turn))] = "transcript"
         # As `respond`: the turn is over, and the next one starts from START.
-        asyncio.ensure_future(
-            graph.aupdate_state(turn_config(thread_id), update, as_node="respond")
-        ): "checkpoint",
-    }
+        writes[
+            asyncio.ensure_future(
+                graph.aupdate_state(turn_config(thread_id), update, as_node="respond")
+            )
+        ] = "checkpoint"
     try:
-        done, pending = await asyncio.wait(writes, timeout=EMERGENCY_WRITE_TIMEOUT_S)
+        # asyncio.wait refuses an empty set: past the budget with no Redis.
+        pending = (
+            (await asyncio.wait(writes, timeout=EMERGENCY_WRITE_TIMEOUT_S))[1] if writes else set()
+        )
     finally:
         # Also on cancellation (a client disconnect): no write outlives the turn.
         for task in writes:
             if not task.done():
                 task.cancel()
     for task, name in writes.items():
-        if task in pending:
-            log.error("emergency_unrecorded", write=name, error_type="Timeout")
-            degraded.note(UNRECORDED, f"{name}: timeout")
-        elif (exc := task.exception()) is not None:
-            log.error("emergency_unrecorded", write=name, error_type=type(exc).__name__)
-            degraded.note(UNRECORDED, f"{name}: {type(exc).__name__}")
+        failure = "Timeout" if task in pending else task.exception()
+        if failure is None:
+            continue
+        error_type = failure if isinstance(failure, str) else type(failure).__name__
+        log.error("emergency_unrecorded", write=name, error_type=error_type)
+        # A mark that could not be left is its own degraded mode (R6, noted by
+        # EmergencyMarks when Redis is down); the reply was still recorded.
+        if name != "mark":
+            degraded.note(UNRECORDED, f"{name}: {error_type}")
     yield Final(final, tuple(degraded.modes), guardrail)

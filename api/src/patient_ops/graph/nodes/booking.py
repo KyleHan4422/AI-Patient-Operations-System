@@ -402,6 +402,20 @@ async def _choose(
 async def _confirm(
     desk: BookingDesk, draft: BookingDraft, owner: str, now: datetime
 ) -> dict[str, Any]:
+    emergency_at = await desk.emergency_since(owner)
+    if emergency_at is not None and emergency_at > draft.updated_at:
+        # The read-back was asked before this conversation reported an
+        # emergency, so this "yes" may be answering the emergency reply. The
+        # emergency turn normally ends the booking outright; this is for when
+        # its checkpoint write did not land. Ask again, now, and a yes to that
+        # books it.
+        log.warning("booking_reconfirm_after_emergency", owner=owner)
+        text = (
+            replies.READ_BACK_AFTER_EMERGENCY
+            + " "
+            + replies.read_back_sentence(draft.procedure_name or "", _view(draft.chosen_slot, desk))
+        )
+        return _say(draft, text, "booking_read_back", now)
     if not await _still_ours(desk, draft.chosen_slot.slot(), owner):
         await _withdraw(desk, draft, owner)
         return await _offer(desk, draft, owner, now, lead=replies.SLOT_TAKEN)

@@ -37,6 +37,7 @@ from patient_ops.domain.availability import SchedulingPolicy
 from patient_ops.errors import ErrorCode, ToolError
 from patient_ops.guardrails.booking_policy import ProposedVisit, violations
 from patient_ops.obs.logging import get_logger
+from patient_ops.redis_layer.emergency_marks import EmergencyMarks
 from patient_ops.redis_layer.holds import HoldResult, HoldStatus, SlotHolds
 from patient_ops.redis_layer.idempotency import InFlightDedup
 from patient_ops.tools.registry import ToolInvocation
@@ -99,6 +100,9 @@ class BookingDesk:
     tz: ZoneInfo
     now: Callable[[], datetime] = _utc_now
     policy: SchedulingPolicy = field(default_factory=SchedulingPolicy)
+    # R6: when this conversation last reported an emergency. None where no
+    # Redis is wired in; the checkpoint write is then the only protection.
+    marks: EmergencyMarks | None = None
     trace: list[ToolInvocation] = field(default_factory=list)
     _catalogue: list[tuple[str, str]] | None = field(default=None, init=False, repr=False)
 
@@ -162,6 +166,9 @@ class BookingDesk:
 
     async def hold_status(self, slot: Slot, owner: str) -> HoldStatus:
         return await self.holds.check(slot, owner)
+
+    async def emergency_since(self, owner: str) -> datetime | None:
+        return None if self.marks is None else await self.marks.since(owner)
 
     async def release_holds(self, owner: str, *, keep: Slot | None = None) -> None:
         released = await self.holds.release_all(owner, keep=keep)
